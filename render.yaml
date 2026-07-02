@@ -1,0 +1,20 @@
+# Render Blueprint — Smart Stock Assistant
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: smart-stock-assistant-web
+    runtime: static
+    rootDir: app
+    buildCommand: >-
+      curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.24.5-stable.tar.xz -o flutter.tar.xz
+      && tar xf flutter.tar.xz
+      && export PATH="$PWD/flutter/bin:$PATH"
+      && flutter config --enable-web
+      && flutter pub get
+      && flutter build web --release
+    staticPublishPath: ./app/build/web
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
