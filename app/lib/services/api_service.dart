@@ -7,13 +7,10 @@ import '../models/system_status.dart';
 
 /// HTTP client for Smart Stock Assistant backend.
 ///
-/// Change [baseUrl] for your environment:
-/// - Flutter web: http://127.0.0.1:20000
-/// - Physical device on same Wi-Fi: http://YOUR_PC_IP:8000
-/// - iOS simulator: http://localhost:8000
+/// Production backend: https://smart-stock-assistant.onrender.com
 class ApiService {
-  static const String baseUrl = 'http://127.0.0.1:20000';
-  static const String baseUrl1 = 'http://127.0.0.1:20000';
+  static const String baseUrl = 'https://smart-stock-assistant.onrender.com';
+  static const String baseUrl1 = 'https://smart-stock-assistant.onrender.com';
   static const String appPassword = 'SmartStock2026!';
 
   final http.Client _client;
