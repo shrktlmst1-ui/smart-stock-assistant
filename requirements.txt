@@ -1,0 +1,7 @@
+# Python dependencies — install from project root:
+#   pip install -r requirements.txt
+#
+# Or from backend folder:
+#   cd backend && pip install -r requirements.txt
+
+-r backend/requirements.txt

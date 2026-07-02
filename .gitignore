@@ -1,0 +1,27 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+__pycache__/
+.env
+venv/
+.venv/
+backend/data/
+
+# Flutter
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+app/build/
+app/.idea/
+app/*.iml
+
+# Android
+app/android/.gradle/
+app/android/local.properties
+app/android/**/GeneratedPluginRegistrant.java
+
+# iOS
+app/ios/Pods/
+app/ios/.symlinks/
