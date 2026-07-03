@@ -13,7 +13,7 @@ services:
       && flutter config --enable-web
       && flutter pub get
       && flutter build web --release
-    staticPublishPath: ./app/build/web
+    staticPublishPath: build/web
     routes:
       - type: rewrite
         source: /*
