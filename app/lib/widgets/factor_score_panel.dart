@@ -275,7 +275,7 @@ class _FactorScoreRow extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.clip,
                   style: TextStyle(
-                    color: color.withValues(alpha: 0.35),
+                    color: color.withOpacity(0.35),
                     letterSpacing: 1,
                     fontSize: 12,
                     height: 1.2,

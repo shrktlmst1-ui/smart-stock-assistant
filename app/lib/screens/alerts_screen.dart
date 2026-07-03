@@ -65,8 +65,8 @@ class _AlertsScreenState extends State<AlertsScreen> {
                     },
                     leading: CircleAvatar(
                       backgroundColor: alert.isActive
-                          ? AppTheme.warning.withValues(alpha: 0.15)
-                          : AppTheme.textSecondary.withValues(alpha: 0.15),
+                          ? AppTheme.warning.withOpacity( 0.15)
+                          : AppTheme.textSecondary.withOpacity( 0.15),
                       child: Icon(
                         alert.isActive
                             ? Icons.notifications_active
@@ -89,7 +89,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
                       children: [
                         Switch(
                           value: alert.isActive,
-                          activeThumbColor: AppTheme.primary,
+                          activeColor: AppTheme.primary,
                           onChanged: (v) => context
                               .read<AppState>()
                               .toggleAlert(alert.id, v),

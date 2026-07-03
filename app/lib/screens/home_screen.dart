@@ -152,7 +152,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         colors: [
-                          AppTheme.primary.withValues(alpha: 0.2),
+                          AppTheme.primary.withOpacity( 0.2),
                           AppTheme.surface,
                         ],
                         begin: Alignment.topRight,
@@ -160,7 +160,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(
-                        color: AppTheme.primary.withValues(alpha: 0.3),
+                        color: AppTheme.primary.withOpacity( 0.3),
                       ),
                     ),
                     child: Column(
@@ -202,7 +202,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 16),
                   if (_error != null) ...[
                     Card(
-                      color: AppTheme.danger.withValues(alpha: 0.12),
+                      color: AppTheme.danger.withOpacity( 0.12),
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Column(

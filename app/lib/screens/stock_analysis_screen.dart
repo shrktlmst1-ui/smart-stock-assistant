@@ -99,7 +99,7 @@ class _StockAnalysisScreenState extends State<StockAnalysisScreen> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                initialValue: condition,
+                value: condition,
                 decoration: const InputDecoration(labelText: 'الشرط'),
                 items: const [
                   DropdownMenuItem(value: 'above', child: Text('عندما يتجاوز')),

@@ -35,7 +35,7 @@ class StockCard extends StatelessWidget {
                   height: 32,
                   margin: const EdgeInsets.only(left: 12),
                   decoration: BoxDecoration(
-                    color: AppTheme.primary.withValues(alpha: 0.15),
+                    color: AppTheme.primary.withOpacity( 0.15),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   alignment: Alignment.center,
@@ -255,7 +255,7 @@ class EmptyState extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, size: 64, color: AppTheme.textSecondary.withValues(alpha: 0.5)),
+            Icon(icon, size: 64, color: AppTheme.textSecondary.withOpacity( 0.5)),
             const SizedBox(height: 16),
             Text(
               title,

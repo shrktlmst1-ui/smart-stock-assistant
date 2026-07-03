@@ -60,7 +60,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                     },
                     leading: CircleAvatar(
                       backgroundColor:
-                          AppTheme.primary.withValues(alpha: 0.15),
+                          AppTheme.primary.withOpacity( 0.15),
                       child: Text(
                         item.symbol.substring(0, 1),
                         style: const TextStyle(
