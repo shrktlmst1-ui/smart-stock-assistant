@@ -72,14 +72,32 @@ SCANNER_BOARD_SIZE: int = int(os.getenv("SCANNER_BOARD_SIZE", "20"))
 POLYGON_BASE_URL: str = "https://api.polygon.io"
 POLYGON_WS_URL: str = "wss://socket.polygon.io/stocks"
 
+# Origins that must always be allowed (production Flutter web + local dev).
+REQUIRED_CORS_ORIGINS: tuple[str, ...] = (
+    "https://smart-stock-assistant-web.onrender.com",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
+
 CORS_ORIGINS: list[str] = [
     o.strip()
     for o in os.getenv(
         "CORS_ORIGINS",
-        "https://smart-stock-assistant-web.onrender.com,http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000",
+        ",".join(REQUIRED_CORS_ORIGINS),
     ).split(",")
     if o.strip()
 ]
+
+
+def get_cors_origins() -> list[str]:
+    """Merge env-configured origins with required production/dev origins."""
+    origins: list[str] = list(REQUIRED_CORS_ORIGINS)
+    for origin in CORS_ORIGINS:
+        if origin not in origins:
+            origins.append(origin)
+    return origins
 
 # Bar refresh intervals (seconds) to stay within rate limits
 MINUTE_BARS_REFRESH_SECONDS: int = int(os.getenv("MINUTE_BARS_REFRESH_SECONDS", "60"))
