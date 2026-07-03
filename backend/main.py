@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import CORS_ORIGINS, POLYGON_PLAN, POLL_INTERVAL_SECONDS, SCANNER_TICK_SECONDS, SCANNER_TOP_N, WEBSOCKET_ENABLED
+from config import POLYGON_PLAN, POLL_INTERVAL_SECONDS, SCANNER_TICK_SECONDS, SCANNER_TOP_N, WEBSOCKET_ENABLED
 from database.signal_logger import get_signal_history, init_db
 from database.trading_journal import get_journal_entries, init_journal_db
 from models.performance import BacktestMetrics, JournalEntry, PerformanceMetrics, ProductionStatus
@@ -106,7 +106,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
+    allow_origins=[
+        "https://smart-stock-assistant-web.onrender.com",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
