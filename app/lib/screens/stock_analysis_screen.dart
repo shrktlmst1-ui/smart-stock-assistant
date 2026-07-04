@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/ar_localization.dart';
 import '../models/alert.dart';
 import '../models/stock.dart';
 import '../services/app_state.dart';
@@ -290,7 +291,7 @@ class _StockAnalysisScreenState extends State<StockAnalysisScreen> {
             ],
           ),
           if (a.tradeDecision != null) ...[
-            const SectionHeader(title: 'قرار المحرك — Decision Engine'),
+            const SectionHeader(title: 'قرار محرك التحليل'),
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -298,7 +299,9 @@ class _StockAnalysisScreenState extends State<StockAnalysisScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      a.tradeDecision!.professionalSignal ?? a.tradeDecision!.recommendation,
+                      ArUi.professionalSignal(
+                        a.tradeDecision!.professionalSignal ?? a.tradeDecision!.recommendation,
+                      ),
                       style: const TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.bold,
@@ -307,7 +310,7 @@ class _StockAnalysisScreenState extends State<StockAnalysisScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'AI Score: ${(a.tradeDecision!.professionalAiScore ?? a.tradeDecision!.aiConfidence).toStringAsFixed(0)} · R:R ${a.tradeDecision!.riskRewardRatio.toStringAsFixed(2)}',
+                      'درجة التحليل: ${(a.tradeDecision!.professionalAiScore ?? a.tradeDecision!.aiConfidence).toStringAsFixed(0)} · R:R ${a.tradeDecision!.riskRewardRatio.toStringAsFixed(2)}',
                       style: const TextStyle(color: AppTheme.textSecondary),
                     ),
                     if (a.tradeDecision!.expectedHoldingTime != null &&
@@ -339,7 +342,7 @@ class _StockAnalysisScreenState extends State<StockAnalysisScreen> {
                       ),
                     if (a.tradeDecision!.devilsAdvocate.isNotEmpty) ...[
                       const SizedBox(height: 12),
-                      Text('Devil\'s Advocate: ${a.tradeDecision!.devilsAdvocate}'),
+                      Text('رأي معارض: ${a.tradeDecision!.devilsAdvocate}'),
                     ],
                   ],
                 ),

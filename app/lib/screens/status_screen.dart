@@ -56,11 +56,11 @@ class _StatusScreenState extends State<StatusScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('System Status'),
+        title: const Text('حالة النظام'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
+            tooltip: 'تحديث',
             onPressed: _loading ? null : _load,
           ),
         ],
@@ -74,30 +74,30 @@ class _StatusScreenState extends State<StatusScreen> {
             if (_loading)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 48),
-                child: LoadingView(message: 'Checking live status...'),
+                child: LoadingView(message: 'جاري التحقق من الحالة...'),
               )
             else if (status != null) ...[
               _StatusRow(
-                label: 'Backend Connected',
+                label: 'متصل بالخادم',
                 ok: status.backendConnected,
               ),
               _StatusRow(
-                label: 'Polygon Connected',
+                label: 'متصل بـ Polygon',
                 ok: status.polygonConnected,
               ),
               _StatusRow(
-                label: 'WebSocket Live',
+                label: 'بث WebSocket مباشر',
                 ok: status.websocketLive,
               ),
               _StatusRow(
-                label: 'Market Scanner Running',
+                label: 'الماسح يعمل',
                 ok: status.marketScannerRunning,
               ),
               const SizedBox(height: 16),
               Card(
                 child: ListTile(
                   leading: const Icon(Icons.schedule, color: AppTheme.primary),
-                  title: const Text('Last Update Time'),
+                  title: const Text('آخر تحديث'),
                   subtitle: Text(
                     _formatLastUpdate(status.lastUpdate),
                     style: const TextStyle(
@@ -120,7 +120,7 @@ class _StatusScreenState extends State<StatusScreen> {
                 child: ElevatedButton.icon(
                   onPressed: _load,
                   icon: const Icon(Icons.refresh),
-                  label: const Text('Refresh'),
+                  label: const Text('تحديث'),
                 ),
               ),
             ],
@@ -148,7 +148,7 @@ class _StatusRow extends StatelessWidget {
         ),
         title: Text(label),
         trailing: Text(
-          ok ? 'OK' : 'OFF',
+          ok ? 'نشط' : 'متوقف',
           style: TextStyle(
             fontWeight: FontWeight.bold,
             color: ok ? AppTheme.success : AppTheme.danger,

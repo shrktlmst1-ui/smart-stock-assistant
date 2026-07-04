@@ -19,7 +19,7 @@ class SmartStockApp extends StatelessWidget {
     return ChangeNotifierProvider(
       create: (_) => AppState()..init(),
       child: MaterialApp(
-        title: 'Smart Stock Assistant',
+        title: 'مساعد الأسهم الذكي',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.darkTheme,
         builder: (context, child) {

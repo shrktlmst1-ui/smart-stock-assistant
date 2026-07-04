@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/ar_localization.dart';
 import '../models/trade_replay.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
@@ -128,7 +129,7 @@ class TradeReplayDetailScreen extends StatelessWidget {
     final post = replay.postTrade;
 
     return Scaffold(
-      appBar: AppBar(title: Text('${replay.symbol} — Replay')),
+      appBar: AppBar(title: Text('${replay.symbol} — إعادة الصفقة')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -139,7 +140,7 @@ class TradeReplayDetailScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '${replay.symbol} · ${replay.signal}',
+                    '${replay.symbol} · ${ArUi.signal(replay.signal)}',
                     style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                   Text('${replay.signalDate} ${replay.signalTime}'),
@@ -148,10 +149,10 @@ class TradeReplayDetailScreen extends StatelessWidget {
                     spacing: 8,
                     runSpacing: 4,
                     children: [
-                      _chip('AI ${replay.aiScore.toStringAsFixed(0)}'),
+                      _chip('تحليل ${replay.aiScore.toStringAsFixed(0)}'),
                       _chip('ثقة ${replay.confidenceScore.toStringAsFixed(0)}%'),
                       _chip('دخول ${replay.entryPrice.toStringAsFixed(2)}'),
-                      _chip(replay.trackStatus),
+                      _chip(ArUi.trackStatus(replay.trackStatus)),
                     ],
                   ),
                 ],
@@ -191,7 +192,7 @@ class TradeReplayDetailScreen extends StatelessWidget {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(event.eventLabel),
+                              Text(ArUi.timelineEvent(event.eventLabel)),
                               if (event.price != null)
                                 Text(
                                   '\$${event.price!.toStringAsFixed(2)}',
@@ -220,7 +221,7 @@ class TradeReplayDetailScreen extends StatelessWidget {
                     Row(
                       children: [
                         Text(
-                          post.finalResult,
+                          ArUi.tradeResult(post.finalResult),
                           style: TextStyle(
                             color: _resultColor(post.finalResult),
                             fontWeight: FontWeight.bold,
@@ -229,7 +230,7 @@ class TradeReplayDetailScreen extends StatelessWidget {
                         ),
                         const Spacer(),
                         Text(
-                          post.postTradeQuality,
+                          ArUi.tradeQuality(post.postTradeQuality),
                           style: const TextStyle(color: AppTheme.warning),
                         ),
                       ],
@@ -380,11 +381,13 @@ class _ReplayListTile extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
         onTap: onTap,
-        title: Text('${replay.symbol} · ${replay.signal}'),
-        subtitle: Text('${replay.signalDate} ${replay.signalTime} · ${replay.trackStatus}'),
+        title: Text('${replay.symbol} · ${ArUi.signal(replay.signal)}'),
+        subtitle: Text(
+          '${replay.signalDate} ${replay.signalTime} · ${ArUi.trackStatus(replay.trackStatus)}',
+        ),
         trailing: post != null
             ? Text(
-                post.finalResult,
+                ArUi.tradeResult(post.finalResult),
                 style: TextStyle(
                   color: post.finalResult == 'WIN'
                       ? AppTheme.success

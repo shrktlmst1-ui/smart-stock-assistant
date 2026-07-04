@@ -21,7 +21,7 @@ class SystemStatus {
         polygonConnected: false,
         websocketLive: false,
         marketScannerRunning: false,
-        error: error ?? 'Backend unreachable',
+        error: error ?? 'الخادم غير متاح',
       );
 
   static DateTime? _parseTime(String? raw) {

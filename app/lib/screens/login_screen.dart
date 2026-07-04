@@ -72,7 +72,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 24),
                   const Text(
-                    'Smart Stock Assistant',
+                    'مساعد الأسهم الذكي',
                     style: TextStyle(
                       fontSize: 24,
                       fontWeight: FontWeight.bold,

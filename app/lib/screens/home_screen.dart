@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/ar_localization.dart';
 import '../models/stock.dart';
 import '../services/app_state.dart';
 import '../theme/app_theme.dart';
@@ -83,7 +84,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 const Icon(Icons.analytics_outlined, color: AppTheme.primary, size: 20),
                 const SizedBox(width: 8),
                 Text(
-                  'Market: ${dashboard.marketStatus}',
+                  ArUi.marketLabel(dashboard.marketStatus),
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     color: AppTheme.textPrimary,
@@ -92,15 +93,15 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
             const SizedBox(height: 12),
-            _DebugRow('Symbols scanned', '${d.symbolsScanned}'),
-            _DebugRow('Universe symbols', '${d.universeSymbols}'),
-            _DebugRow('Passed liquidity', '${d.passedLiquidity}'),
-            _DebugRow('Deep analysis', '${d.deepAnalysisCompleted}'),
-            _DebugRow('Passed all 18 filters', '${d.passedAllFilters}'),
+            _DebugRow('الأسهم المفحوصة', '${d.symbolsScanned}'),
+            _DebugRow('إجمالي الأسهم', '${d.universeSymbols}'),
+            _DebugRow('اجتازت السيولة', '${d.passedLiquidity}'),
+            _DebugRow('تحليل عميق', '${d.deepAnalysisCompleted}'),
+            _DebugRow('اجتازت جميع الفلاتر 18', '${d.passedAllFilters}'),
             if (d.signalWait > 0 || d.signalAvoid > 0) ...[
               const SizedBox(height: 8),
               Text(
-                'Signals: WAIT ${d.signalWait}, AVOID ${d.signalAvoid}',
+                'الإشارات: انتظار ${d.signalWait}، تجنب ${d.signalAvoid}',
                 style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
               ),
             ],
@@ -125,12 +126,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Smart Stock Assistant'),
+        title: const Text('مساعد الأسهم الذكي'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _loading ? null : _load,
-            tooltip: 'Refresh',
+            tooltip: 'تحديث',
           ),
           IconButton(
             icon: const Icon(Icons.logout),
@@ -143,7 +144,7 @@ class _HomeScreenState extends State<HomeScreen> {
         onRefresh: _load,
         color: AppTheme.primary,
         child: _loading
-            ? const LoadingView(message: 'Loading live opportunities...')
+            ? const LoadingView(message: 'جاري تحميل الفرص المباشرة...')
             : ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
@@ -152,7 +153,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         colors: [
-                          AppTheme.primary.withOpacity( 0.2),
+                          AppTheme.primary.withOpacity(0.2),
                           AppTheme.surface,
                         ],
                         begin: Alignment.topRight,
@@ -160,7 +161,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(
-                        color: AppTheme.primary.withOpacity( 0.3),
+                        color: AppTheme.primary.withOpacity(0.3),
                       ),
                     ),
                     child: Column(
@@ -168,8 +169,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Text(
                           showingWatchlist
-                              ? 'Top Watchlist Candidates'
-                              : 'Top Institutional Opportunities',
+                              ? 'أفضل الأسهم المرشحة للمراقبة'
+                              : 'أفضل الفرص المؤسسية',
                           style: const TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.bold,
@@ -179,8 +180,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         const SizedBox(height: 4),
                         Text(
                           showingWatchlist
-                              ? 'Highest AI scores — not live entry signals until all filters pass'
-                              : 'Live US market — all 18 factors must pass',
+                              ? 'أعلى درجات التحليل — ليست إشارات دخول حتى اجتياز جميع الفلاتر'
+                              : 'السوق الأمريكي المباشر — يجب اجتياز 18 عاملاً',
                           style: const TextStyle(color: AppTheme.textSecondary),
                         ),
                       ],
@@ -196,20 +197,20 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: OutlinedButton.icon(
                       onPressed: _load,
                       icon: const Icon(Icons.refresh),
-                      label: const Text('Refresh'),
+                      label: const Text('تحديث'),
                     ),
                   ),
                   const SizedBox(height: 16),
                   if (_error != null) ...[
                     Card(
-                      color: AppTheme.danger.withOpacity( 0.12),
+                      color: AppTheme.danger.withOpacity(0.12),
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              'Backend connection error',
+                              'خطأ في الاتصال بالخادم',
                               style: TextStyle(
                                 fontWeight: FontWeight.bold,
                                 color: AppTheme.danger,
@@ -241,7 +242,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           SizedBox(height: 16),
                           Text(
-                            'No High Quality Opportunities Right Now',
+                            'لا توجد فرص عالية الجودة حالياً',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               fontSize: 18,
@@ -251,7 +252,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           SizedBox(height: 8),
                           Text(
-                            'See scanner summary above for pipeline counts and rejection reasons.',
+                            'راجع ملخص الماسح أعلاه لأعداد المراحل وأسباب الرفض.',
                             textAlign: TextAlign.center,
                             style: TextStyle(color: AppTheme.textSecondary),
                           ),
@@ -260,10 +261,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     )
                   else if (items.isNotEmpty) ...[
                     SectionHeader(
-                      title: showingWatchlist ? 'Watchlist Candidates' : 'Top Opportunities',
+                      title: showingWatchlist ? 'قائمة المراقبة' : 'أفضل الفرص',
                       subtitle: showingWatchlist
-                          ? 'Ranked by AI score (filters may not all pass)'
-                          : 'Live data from Polygon',
+                          ? 'مرتبة حسب درجة التحليل (قد لا تجتاز جميع الفلاتر)'
+                          : 'بيانات مباشرة من Polygon',
                     ),
                     ...List.generate(items.length, (i) {
                       final stock = items[i];
@@ -276,7 +277,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                   const SizedBox(height: 8),
                   const Text(
-                    'For monitoring only — not investment advice.',
+                    'للمتابعة فقط وليس توصية استثمارية',
                     style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
                     textAlign: TextAlign.center,
                   ),

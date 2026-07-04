@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/ar_localization.dart';
 import '../models/signal_analytics.dart';
 import '../models/trade_replay.dart';
 import '../services/api_service.dart';
@@ -73,7 +74,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Performance'),
+        title: const Text('الأداء'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -93,7 +94,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                     children: [
                       if (_dashboard != null) ...[
                         _SectionHeader(
-                          title: 'Win Rate',
+                          title: 'نسبة النجاح',
                           icon: Icons.emoji_events_outlined,
                         ),
                         _WinRateCard(dashboard: _dashboard!),
@@ -101,7 +102,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                       ],
                       if (_report != null) ...[
                         _SectionHeader(
-                          title: 'Performance Analytics',
+                          title: 'تحليلات الأداء',
                           icon: Icons.insights_outlined,
                         ),
                         _PerformanceAnalyticsCard(report: _report!),
@@ -109,7 +110,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                       ],
                       if (_insights != null) ...[
                         _SectionHeader(
-                          title: 'Trade Statistics',
+                          title: 'إحصائيات الصفقات',
                           icon: Icons.bar_chart_outlined,
                         ),
                         _TradeStatisticsCard(
@@ -120,7 +121,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                       ],
                       if (_dashboard != null && _ranked != null) ...[
                         _SectionHeader(
-                          title: 'AI Performance',
+                          title: 'أداء الذكاء',
                           icon: Icons.psychology_outlined,
                         ),
                         _AiPerformanceCard(
@@ -131,24 +132,24 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                       ],
                       if (_ranked != null) ...[
                         _SectionHeader(
-                          title: 'Signal History',
+                          title: 'سجل الإشارات',
                           icon: Icons.list_alt_outlined,
                           count: _ranked!.signals.length,
                         ),
                         if (_ranked!.signals.isEmpty)
-                          const _EmptySection(message: 'No signals recorded yet.')
+                          const _EmptySection(message: 'لا توجد إشارات مسجلة بعد.')
                         else
                           ..._ranked!.signals.map(_SignalHistoryTile.new),
                         const SizedBox(height: 20),
                       ],
                       if (_replay != null) ...[
                         _SectionHeader(
-                          title: 'Trade Replay',
+                          title: 'إعادة الصفقة',
                           icon: Icons.history,
                           count: _replay!.replays.length,
                         ),
                         if (_replay!.replays.isEmpty)
-                          const _EmptySection(message: 'No trade replays yet.')
+                          const _EmptySection(message: 'لا توجد صفقات لإعادة العرض بعد.')
                         else
                           ..._replay!.replays.map(
                             (r) => _ReplayTile(
@@ -239,7 +240,7 @@ class _ErrorView extends StatelessWidget {
             const SizedBox(height: 12),
             Text(message, textAlign: TextAlign.center),
             const SizedBox(height: 16),
-            ElevatedButton(onPressed: onRetry, child: const Text('Retry')),
+            ElevatedButton(onPressed: onRetry, child: const Text('إعادة المحاولة')),
           ],
         ),
       ),
@@ -270,10 +271,10 @@ class _WinRateCard extends StatelessWidget {
                       color: AppTheme.success,
                     ),
                   ),
-                  const Text('Win Rate'),
+                  const Text('نسبة النجاح'),
                   const SizedBox(height: 12),
                   Text(
-                    '${dashboard.winningSignals} wins · ${dashboard.losingSignals} losses',
+                    '${dashboard.winningSignals} رابحة · ${dashboard.losingSignals} خاسرة',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -281,11 +282,11 @@ class _WinRateCard extends StatelessWidget {
             ),
             Column(
               children: [
-                _WinStatChip('Total', '${dashboard.totalSignals}'),
+                _WinStatChip('الإجمالي', '${dashboard.totalSignals}'),
                 const SizedBox(height: 8),
-                _WinStatChip('Open', '${dashboard.openTracks}'),
+                _WinStatChip('مفتوحة', '${dashboard.openTracks}'),
                 const SizedBox(height: 8),
-                _WinStatChip('Active', '${dashboard.activeTracks}'),
+                _WinStatChip('نشطة', '${dashboard.activeTracks}'),
               ],
             ),
           ],
@@ -333,9 +334,9 @@ class _PerformanceAnalyticsCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Expanded(child: _Metric('Today', '${report.todaySignals}')),
-                Expanded(child: _Metric('This Week', '${report.weekSignals}')),
-                Expanded(child: _Metric('This Month', '${report.monthSignals}')),
+                Expanded(child: _Metric('اليوم', '${report.todaySignals}')),
+                Expanded(child: _Metric('هذا الأسبوع', '${report.weekSignals}')),
+                Expanded(child: _Metric('هذا الشهر', '${report.monthSignals}')),
               ],
             ),
             const Divider(height: 24),
@@ -343,17 +344,17 @@ class _PerformanceAnalyticsCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: _Metric(
-                    'Avg Return',
+                    'متوسط العائد',
                     '${report.averageReturnPct >= 0 ? '+' : ''}${report.averageReturnPct.toStringAsFixed(2)}%',
                   ),
                 ),
                 Expanded(
                   child: _Metric(
-                    'Avg Drawdown',
+                    'متوسط التراجع',
                     '-${report.averageDrawdownPct.toStringAsFixed(2)}%',
                   ),
                 ),
-                Expanded(child: _Metric('Overall', '${report.overallTotal}')),
+                Expanded(child: _Metric('الإجمالي', '${report.overallTotal}')),
               ],
             ),
             const Divider(height: 24),
@@ -361,13 +362,13 @@ class _PerformanceAnalyticsCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: _Metric(
-                    'Best Symbol',
+                    'أفضل سهم',
                     report.bestSymbol.isEmpty ? '—' : report.bestSymbol,
                   ),
                 ),
                 Expanded(
                   child: _Metric(
-                    'Worst Symbol',
+                    'أسوأ سهم',
                     report.worstSymbol.isEmpty ? '—' : report.worstSymbol,
                   ),
                 ),
@@ -388,8 +389,8 @@ class _TradeStatisticsCard extends StatelessWidget {
 
   String _dur(int seconds) {
     if (seconds <= 0) return '—';
-    if (seconds < 3600) return '${seconds ~/ 60}m';
-    return '${seconds ~/ 3600}h ${(seconds % 3600) ~/ 60}m';
+    if (seconds < 3600) return '${seconds ~/ 60} د';
+    return '${seconds ~/ 3600} س ${(seconds % 3600) ~/ 60} د';
   }
 
   @override
@@ -402,42 +403,42 @@ class _TradeStatisticsCard extends StatelessWidget {
           runSpacing: 14,
           children: [
             _Metric(
-              'Avg Time To Target',
+              'متوسط وقت الهدف',
               insights.averageTimeToTargetSeconds > 0
                   ? _dur(insights.averageTimeToTargetSeconds.round())
                   : '—',
             ),
             _Metric(
-              'Avg Drawdown',
+              'متوسط التراجع',
               '${insights.averageDrawdownPct.toStringAsFixed(2)}%',
             ),
             _Metric(
-              'Avg Profit',
+              'متوسط الربح',
               '${insights.averageProfitPct.toStringAsFixed(2)}%',
             ),
-            _Metric('Best Holding Time', _dur(insights.bestHoldingTimeSeconds)),
+            _Metric('أفضل مدة احتفاظ', _dur(insights.bestHoldingTimeSeconds)),
             _Metric(
-              'Best Timeframe',
+              'أفضل إطار زمني',
               insights.bestTimeframe.isEmpty ? '—' : insights.bestTimeframe,
             ),
             _Metric(
-              'Best Entry Quality',
+              'أفضل جودة دخول',
               insights.bestEntryQualitySymbol.isEmpty
                   ? '—'
                   : insights.bestEntryQualitySymbol,
             ),
             _Metric(
-              'Worst Entry Quality',
+              'أسوأ جودة دخول',
               insights.worstEntryQualitySymbol.isEmpty
                   ? '—'
                   : insights.worstEntryQualitySymbol,
             ),
             if (dashboard != null)
               _Metric(
-                'Avg Holding',
-                '${dashboard!.averageHoldingTimeHours.toStringAsFixed(1)}h',
+                'متوسط مدة الاحتفاظ',
+                '${dashboard!.averageHoldingTimeHours.toStringAsFixed(1)} س',
               ),
-            _Metric('Closed Trades', '${insights.closedTrades}'),
+            _Metric('صفقات مغلقة', '${insights.closedTrades}'),
           ],
         ),
       ),
@@ -473,14 +474,14 @@ class _AiPerformanceCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: _AiMetric(
-                    label: 'Highest AI Today',
+                    label: 'أعلى درجة تحليل اليوم',
                     value: dashboard.highestAiScoreToday.toStringAsFixed(0),
                     color: AppTheme.primary,
                   ),
                 ),
                 Expanded(
                   child: _AiMetric(
-                    label: 'Highest Confidence Today',
+                    label: 'أعلى ثقة اليوم',
                     value: dashboard.highestConfidenceToday.toStringAsFixed(0),
                     color: AppTheme.accent,
                   ),
@@ -492,14 +493,14 @@ class _AiPerformanceCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: _AiMetric(
-                    label: 'Avg AI Score',
+                    label: 'متوسط درجة التحليل',
                     value: _avgAi.toStringAsFixed(1),
                     color: AppTheme.primary,
                   ),
                 ),
                 Expanded(
                   child: _AiMetric(
-                    label: 'Avg Confidence',
+                    label: 'متوسط الثقة',
                     value: '${_avgConfidence.toStringAsFixed(1)}%',
                     color: AppTheme.accent,
                   ),
@@ -513,7 +514,7 @@ class _AiPerformanceCard extends StatelessWidget {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Best Sector: ${dashboard.bestPerformingSector}',
+                    'أفضل قطاع: ${dashboard.bestPerformingSector}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
@@ -521,7 +522,7 @@ class _AiPerformanceCard extends StatelessWidget {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Best Timeframe: ${dashboard.bestPerformingTimeframe}',
+                    'أفضل إطار: ${dashboard.bestPerformingTimeframe}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
@@ -608,11 +609,11 @@ class _SignalHistoryTile extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             const SizedBox(width: 8),
-            Text(signal.signal, style: Theme.of(context).textTheme.bodySmall),
+            Text(ArUi.signal(signal.signal), style: Theme.of(context).textTheme.bodySmall),
           ],
         ),
         subtitle: Text(
-          '${signal.signalDate} ${signal.signalTime} · AI ${signal.aiScore.toStringAsFixed(0)} · ${signal.confidenceScore.toStringAsFixed(0)}%',
+          '${signal.signalDate} ${signal.signalTime} · تحليل ${signal.aiScore.toStringAsFixed(0)} · ${signal.confidenceScore.toStringAsFixed(0)}%',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         trailing: Container(
@@ -622,7 +623,7 @@ class _SignalHistoryTile extends StatelessWidget {
             borderRadius: BorderRadius.circular(6),
           ),
           child: Text(
-            signal.trackStatus,
+            ArUi.trackStatus(signal.trackStatus),
             style: TextStyle(fontSize: 11, color: _statusColor()),
           ),
         ),
@@ -636,17 +637,17 @@ class _SignalHistoryTile extends StatelessWidget {
                   spacing: 12,
                   runSpacing: 6,
                   children: [
-                    _DetailChip('Entry', signal.entryPrice.toStringAsFixed(2)),
+                    _DetailChip('دخول', signal.entryPrice.toStringAsFixed(2)),
                     _DetailChip('SL', signal.stopLoss.toStringAsFixed(2)),
                     _DetailChip('TP1', signal.target1.toStringAsFixed(2)),
                     _DetailChip('TP2', signal.target2.toStringAsFixed(2)),
                     _DetailChip('TP3', signal.target3.toStringAsFixed(2)),
-                    _DetailChip('Quality', signal.tradeQualityLabel),
+                    _DetailChip('الجودة', ArUi.tradeQuality(signal.tradeQualityLabel)),
                   ],
                 ),
                 if (signal.explanation.isNotEmpty) ...[
                   const SizedBox(height: 12),
-                  const Text('Signal Explanation', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const Text('شرح الإشارة', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 6),
                   ...signal.explanation.map(
                     (item) => Padding(
@@ -660,7 +661,10 @@ class _SignalHistoryTile extends StatelessWidget {
                           ),
                           const SizedBox(width: 6),
                           Expanded(
-                            child: Text(item.label, style: const TextStyle(fontSize: 12)),
+                            child: Text(
+                              ArUi.explanationLabel(item.label),
+                              style: const TextStyle(fontSize: 12),
+                            ),
                           ),
                         ],
                       ),
@@ -671,7 +675,7 @@ class _SignalHistoryTile extends StatelessWidget {
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: Text(
-                      'Return: ${signal.profitPct >= 0 ? '+' : ''}${signal.profitPct.toStringAsFixed(2)}%',
+                      'العائد: ${signal.profitPct >= 0 ? '+' : ''}${signal.profitPct.toStringAsFixed(2)}%',
                       style: TextStyle(color: AppTheme.changeColor(signal.profitPct)),
                     ),
                   ),
@@ -715,14 +719,17 @@ class _ReplayTile extends StatelessWidget {
             style: const TextStyle(fontSize: 12, color: AppTheme.primary),
           ),
         ),
-        title: Text('${replay.symbol} · ${replay.signal}'),
+        title: Text('${replay.symbol} · ${ArUi.signal(replay.signal)}'),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('${replay.signalDate} ${replay.signalTime}'),
             if (replay.timeline.isNotEmpty)
               Text(
-                replay.timeline.map((e) => '${e.eventTime} ${e.eventLabel}').take(3).join(' → '),
+                replay.timeline
+                    .map((e) => '${e.eventTime} ${ArUi.timelineEvent(e.eventLabel)}')
+                    .take(3)
+                    .join(' ← '),
                 style: const TextStyle(fontSize: 11),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
@@ -736,14 +743,14 @@ class _ReplayTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    post.finalResult,
+                    ArUi.tradeResult(post.finalResult),
                     style: TextStyle(
                       color: _resultColor(post.finalResult),
                       fontWeight: FontWeight.bold,
                     ),
                   ),
                   Text(
-                    post.postTradeQuality,
+                    ArUi.tradeQuality(post.postTradeQuality),
                     style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
                   ),
                 ],

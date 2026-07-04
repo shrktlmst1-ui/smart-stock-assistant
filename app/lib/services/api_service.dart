@@ -38,7 +38,7 @@ class ApiService {
     final uri = Uri.parse('$baseUrl/stocks/opportunities?limit=$limit');
     final response = await _client.get(uri);
     if (response.statusCode != 200) {
-      throw Exception('Failed to load opportunities');
+      throw Exception('فشل تحميل الفرص');
     }
     final body = jsonDecode(response.body);
     if (body is List) {
@@ -61,7 +61,7 @@ class ApiService {
     final uri = Uri.parse('$baseUrl/stocks/search?q=${Uri.encodeQueryComponent(query)}');
     final response = await _client.get(uri);
     if (response.statusCode != 200) {
-      throw Exception('Search failed');
+      throw Exception('فشل البحث');
     }
     final list = jsonDecode(response.body) as List;
     return list
@@ -76,7 +76,7 @@ class ApiService {
       throw Exception('السهم غير موجود');
     }
     if (response.statusCode != 200) {
-      throw Exception('Failed to load analysis');
+      throw Exception('فشل تحميل التحليل');
     }
     return StockAnalysis.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
@@ -87,7 +87,7 @@ class ApiService {
     final uri = Uri.parse('$baseUrl/health');
     final response = await _client.get(uri).timeout(const Duration(seconds: 12));
     if (response.statusCode != 200) {
-      throw Exception('Health check failed (${response.statusCode})');
+      throw Exception('فشل فحص الخادم (${response.statusCode})');
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
@@ -96,7 +96,7 @@ class ApiService {
     final uri = Uri.parse('$baseUrl/status');
     final response = await _client.get(uri).timeout(const Duration(seconds: 12));
     if (response.statusCode != 200) {
-      throw Exception('Status check failed (${response.statusCode})');
+      throw Exception('فشل فحص الحالة (${response.statusCode})');
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
@@ -105,7 +105,7 @@ class ApiService {
     final uri = Uri.parse('$baseUrl/scanner/state');
     final response = await _client.get(uri).timeout(const Duration(seconds: 12));
     if (response.statusCode != 200) {
-      throw Exception('Scanner state failed (${response.statusCode})');
+      throw Exception('فشل حالة الماسح (${response.statusCode})');
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
@@ -114,7 +114,7 @@ class ApiService {
     final uri = Uri.parse('$baseUrl/analytics/dashboard');
     final response = await _client.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
-      throw Exception('Analytics dashboard failed (${response.statusCode})');
+      throw Exception('فشل لوحة التحليلات (${response.statusCode})');
     }
     return AnalyticsDashboard.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
@@ -125,7 +125,7 @@ class ApiService {
     final uri = Uri.parse('$baseUrl/analytics/signals?limit=$limit');
     final response = await _client.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
-      throw Exception('Ranked signals failed (${response.statusCode})');
+      throw Exception('فشل تحميل الإشارات (${response.statusCode})');
     }
     return RankedSignalsResponse.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
@@ -136,7 +136,7 @@ class ApiService {
     final uri = Uri.parse('$baseUrl/analytics/performance');
     final response = await _client.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
-      throw Exception('Performance report failed (${response.statusCode})');
+      throw Exception('فشل تقرير الأداء (${response.statusCode})');
     }
     return PerformanceReport.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
@@ -150,7 +150,7 @@ class ApiService {
     }
     final response = await _client.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
-      throw Exception('Trade replay failed (${response.statusCode})');
+      throw Exception('فشل إعادة الصفقة (${response.statusCode})');
     }
     return TradeReplayListResponse.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
@@ -161,7 +161,7 @@ class ApiService {
     final uri = Uri.parse('$baseUrl/analytics/replay/$signalId');
     final response = await _client.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
-      throw Exception('Trade replay detail failed (${response.statusCode})');
+      throw Exception('فشل تفاصيل إعادة الصفقة (${response.statusCode})');
     }
     return TradeReplayDetail.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
@@ -172,7 +172,7 @@ class ApiService {
     final uri = Uri.parse('$baseUrl/analytics/insights');
     final response = await _client.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
-      throw Exception('Performance insights failed (${response.statusCode})');
+      throw Exception('فشل رؤى الأداء (${response.statusCode})');
     }
     return PerformanceInsights.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,

@@ -33,7 +33,7 @@ const List<MapEntry<String, String>> kInstitutionalFactorOrder = [
   MapEntry('bos', 'BOS'),
   MapEntry('choch', 'CHOCH'),
   MapEntry('order_blocks', 'Order Block'),
-  MapEntry('fair_value_gaps', 'Fair Value Gap'),
+  MapEntry('fair_value_gaps', 'FVG'),
   MapEntry('liquidity_sweep', 'Liquidity'),
   MapEntry('ema20', 'EMA20'),
   MapEntry('ema50', 'EMA50'),
@@ -46,7 +46,7 @@ const List<MapEntry<String, String>> kInstitutionalFactorOrder = [
   MapEntry('trend', 'Trend'),
   MapEntry('news_impact', 'News'),
   MapEntry('institutional_flow', 'Institutional Flow'),
-  MapEntry('risk_reward', 'Risk/Reward'),
+  MapEntry('risk_reward', 'R:R'),
 ];
 
 const List<MapEntry<String, String>> kSupplementaryFactorOrder = [
@@ -95,8 +95,8 @@ class FactorScorePanel extends StatelessWidget {
 
   String get _blockerTitle {
     final sig = (signal ?? '').toUpperCase();
-    if (sig == 'AVOID') return 'AVOID because:';
-    return 'BUY blocked because:';
+    if (sig == 'AVOID') return 'سبب التجنب:';
+    return 'سبب منع الشراء:';
   }
 
   String? get _resolvedFinalBlocker {
@@ -120,7 +120,7 @@ class FactorScorePanel extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          'Institutional Factors',
+          'العوامل المؤسسية',
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
         ),
         const SizedBox(height: 4),
@@ -135,7 +135,7 @@ class FactorScorePanel extends StatelessWidget {
         if (kSupplementaryFactorOrder.any((e) => factorScores.containsKey(e.key))) ...[
           const SizedBox(height: 16),
           const Text(
-            'Supplementary',
+            'عوامل إضافية',
             style: TextStyle(
               fontWeight: FontWeight.w600,
               fontSize: 13,
@@ -188,7 +188,7 @@ class FactorScorePanel extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                'Final blocker: $blockerFinal',
+                'الحاجز النهائي: $blockerFinal',
                 style: const TextStyle(
                   fontWeight: FontWeight.w600,
                   color: AppTheme.warning,
@@ -208,9 +208,9 @@ class _LegendRow extends StatelessWidget {
       spacing: 12,
       runSpacing: 4,
       children: [
-        _LegendChip(color: AppTheme.accent, label: 'Passed'),
-        _LegendChip(color: AppTheme.warning, label: 'Warning'),
-        _LegendChip(color: AppTheme.danger, label: 'Failed'),
+        _LegendChip(color: AppTheme.accent, label: 'ناجح'),
+        _LegendChip(color: AppTheme.warning, label: 'تحذير'),
+        _LegendChip(color: AppTheme.danger, label: 'فاشل'),
       ],
     );
   }
