@@ -7,7 +7,6 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -70,7 +69,7 @@ def _web_build_available() -> bool:
 
 
 def _safe_web_file(relative_path: str) -> Path | None:
-    """Resolve a file under the Flutter web build directory."""
+    """Resolve a file under app/build/web; block path traversal."""
     rel = relative_path.lstrip("/")
     if not rel:
         return INDEX_HTML if INDEX_HTML.is_file() else None
@@ -80,6 +79,10 @@ def _safe_web_file(relative_path: str) -> Path | None:
     except ValueError:
         return None
     return target if target.is_file() else None
+
+
+def _serve_web_file(path: Path) -> FileResponse:
+    return FileResponse(path)
 
 
 def _signals_to_opportunities(
@@ -126,6 +129,10 @@ async def lifespan(app: FastAPI):
     init_signal_analytics_db()
     init_trade_replay_db()
     set_notification_broadcast(broadcast)
+    if _web_build_available():
+        logger.info("Serving Flutter web UI from %s", WEB_ROOT)
+    else:
+        logger.warning("Flutter web build not found at %s", WEB_ROOT)
     logger.info("Verifying Polygon/Massive connection...")
     status = await verify_connection()
     logger.info("Connection: %s", status.to_dict())
@@ -161,19 +168,17 @@ app.add_middleware(
 
 
 @app.get("/")
-def root():
-    if _web_build_available():
-        return FileResponse(INDEX_HTML)
-    status = get_connection_status()
-    return {
-        "message": "Smart Stock Assistant API",
-        "status": "running",
-        "mode": "institutional_ai_scanner",
-        "plan": POLYGON_PLAN,
-        "connection": status.to_dict(),
-        "stream_mode": market_stream.mode,
-        "scanner_top_n": SCANNER_TOP_N,
-    }
+def serve_frontend():
+    """Serve the Flutter web app entry point."""
+    if not _web_build_available():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Flutter web build not found at {WEB_ROOT}. "
+                "Run: cd app && flutter build web --release"
+            ),
+        )
+    return _serve_web_file(INDEX_HTML)
 
 
 @app.get("/status")
@@ -516,10 +521,10 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.get("/{full_path:path}")
 async def spa_fallback(full_path: str):
-    """Serve Flutter web assets; unknown paths return index.html for client routing."""
+    """Serve Flutter static assets; unknown frontend routes fall back to index.html."""
     if not _web_build_available():
         raise HTTPException(status_code=404, detail="Not found")
     web_file = _safe_web_file(full_path)
     if web_file is not None:
-        return FileResponse(web_file)
-    return FileResponse(INDEX_HTML)
+        return _serve_web_file(web_file)
+    return _serve_web_file(INDEX_HTML)
