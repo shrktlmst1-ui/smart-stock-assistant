@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/stock.dart';
+import '../models/signal_analytics.dart';
 import '../models/system_status.dart';
+import '../models/trade_replay.dart';
 
 /// HTTP client for Smart Stock Assistant backend.
 ///
@@ -106,6 +108,75 @@ class ApiService {
       throw Exception('Scanner state failed (${response.statusCode})');
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<AnalyticsDashboard> fetchAnalyticsDashboard() async {
+    final uri = Uri.parse('$baseUrl/analytics/dashboard');
+    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) {
+      throw Exception('Analytics dashboard failed (${response.statusCode})');
+    }
+    return AnalyticsDashboard.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<RankedSignalsResponse> fetchRankedSignals({int limit = 50}) async {
+    final uri = Uri.parse('$baseUrl/analytics/signals?limit=$limit');
+    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) {
+      throw Exception('Ranked signals failed (${response.statusCode})');
+    }
+    return RankedSignalsResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<PerformanceReport> fetchPerformanceReport() async {
+    final uri = Uri.parse('$baseUrl/analytics/performance');
+    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) {
+      throw Exception('Performance report failed (${response.statusCode})');
+    }
+    return PerformanceReport.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<TradeReplayListResponse> fetchTradeReplayList({int limit = 50, String? symbol}) async {
+    var uri = Uri.parse('$baseUrl/analytics/replay?limit=$limit');
+    if (symbol != null && symbol.isNotEmpty) {
+      uri = uri.replace(queryParameters: {'limit': '$limit', 'symbol': symbol.toUpperCase()});
+    }
+    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) {
+      throw Exception('Trade replay failed (${response.statusCode})');
+    }
+    return TradeReplayListResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<TradeReplayDetail> fetchTradeReplayDetail(int signalId) async {
+    final uri = Uri.parse('$baseUrl/analytics/replay/$signalId');
+    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) {
+      throw Exception('Trade replay detail failed (${response.statusCode})');
+    }
+    return TradeReplayDetail.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<PerformanceInsights> fetchPerformanceInsights() async {
+    final uri = Uri.parse('$baseUrl/analytics/insights');
+    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) {
+      throw Exception('Performance insights failed (${response.statusCode})');
+    }
+    return PerformanceInsights.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
   }
 
   Future<SystemStatus> fetchSystemStatus() async {

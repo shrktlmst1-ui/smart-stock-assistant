@@ -19,9 +19,13 @@ from config import (
     WEBSOCKET_ENABLED,
     get_cors_origins,
 )
+from database.signal_analytics_db import init_signal_analytics_db
+from database.trade_replay_db import init_trade_replay_db
 from database.signal_logger import get_signal_history, init_db
 from database.trading_journal import get_journal_entries, init_journal_db
 from models.performance import BacktestMetrics, JournalEntry, PerformanceMetrics, ProductionStatus
+from models.signal_analytics import AnalyticsDashboard, PerformanceReport, RankedSignalsResponse
+from models.trade_replay import PerformanceInsights, TradeReplayDetail, TradeReplayListResponse
 from models.scanner import MarketScanState, OpportunitiesResponse
 from models.stock import SearchResult, StockAnalysis, StockOpportunity, StockSnapshot
 from services.connection_service import get_connection_status, verify_connection
@@ -29,6 +33,16 @@ from services.market_stream import MarketStream
 from services.notification_service import set_broadcast as set_notification_broadcast
 from services.backtest_service import run_multi_backtest, run_symbol_backtest
 from services.performance_service import get_performance_metrics
+from services.signal_analytics_service import (
+    get_analytics_dashboard,
+    get_performance_report,
+    get_ranked_signals,
+)
+from services.trade_replay_service import (
+    compute_performance_insights,
+    get_trade_replay_detail,
+    get_trade_replay_list,
+)
 from services.market_scanner_service import market_scanner
 from services.market_session import get_us_market_session, session_explanation
 from services.stock_service import get_stock_analysis, search_stocks
@@ -86,6 +100,8 @@ async def broadcast(message: dict) -> None:
 async def lifespan(app: FastAPI):
     init_db()
     init_journal_db()
+    init_signal_analytics_db()
+    init_trade_replay_db()
     set_notification_broadcast(broadcast)
     logger.info("Verifying Polygon/Massive connection...")
     status = await verify_connection()
@@ -251,6 +267,45 @@ def journal(symbol: str | None = None, limit: int = Query(default=50, ge=1, le=5
 @app.get("/performance", response_model=PerformanceMetrics)
 def performance():
     return PerformanceMetrics(**get_performance_metrics())
+
+
+@app.get("/analytics/dashboard", response_model=AnalyticsDashboard)
+def analytics_dashboard():
+    return get_analytics_dashboard()
+
+
+@app.get("/analytics/signals", response_model=RankedSignalsResponse)
+def analytics_signals(
+    symbol: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    return get_ranked_signals(limit=limit, symbol=symbol)
+
+
+@app.get("/analytics/performance", response_model=PerformanceReport)
+def analytics_performance():
+    return get_performance_report()
+
+
+@app.get("/analytics/replay", response_model=TradeReplayListResponse)
+def analytics_replay_list(
+    symbol: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    return get_trade_replay_list(limit=limit, symbol=symbol)
+
+
+@app.get("/analytics/replay/{signal_id}", response_model=TradeReplayDetail)
+def analytics_replay_detail(signal_id: int):
+    detail = get_trade_replay_detail(signal_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Trade replay not found")
+    return detail
+
+
+@app.get("/analytics/insights", response_model=PerformanceInsights)
+def analytics_insights():
+    return compute_performance_insights()
 
 
 @app.get("/backtest/{symbol}", response_model=BacktestMetrics)

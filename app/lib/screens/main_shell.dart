@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'alerts_screen.dart';
 import 'home_screen.dart';
+import 'performance_screen.dart';
 import 'search_screen.dart';
 import 'status_screen.dart';
 import 'watchlist_screen.dart';
@@ -21,6 +22,7 @@ class _MainShellState extends State<MainShell> {
     SearchScreen(),
     WatchlistScreen(),
     AlertsScreen(),
+    PerformanceScreen(),
     StatusScreen(),
   ];
 
@@ -56,6 +58,11 @@ class _MainShellState extends State<MainShell> {
               icon: Icon(Icons.notifications_outlined),
               activeIcon: Icon(Icons.notifications),
               label: 'تنبيهات',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.analytics_outlined),
+              activeIcon: Icon(Icons.analytics),
+              label: 'الأداء',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.info_outline),

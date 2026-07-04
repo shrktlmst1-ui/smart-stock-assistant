@@ -23,6 +23,8 @@ from models.alerts import StockStatus
 from models.stock import NewsItem, SearchResult, StockAnalysis, StockOpportunity, StockSnapshot
 from models.trading import NewsIntelligence
 from services.journal_service import evaluate_open_trades, record_signal
+from services.market_session import get_us_market_session
+from services.signal_analytics_service import record_analytics_signal, update_analytics_tracks
 from services.news_intelligence import analyze_news
 from services.notification_service import notify_signal
 from services.polygon_client import PolygonClient
@@ -31,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 _client: PolygonClient | None = None
 _name_cache: dict[str, str] = {}
+_ticker_meta_cache: dict[str, dict[str, str]] = {}
 _last_logged_signal: dict[str, str] = {}
 _last_journal_key: dict[str, str] = {}
 
@@ -119,16 +122,32 @@ def _analyze_sync(
         price, change_pct, cache.news_intel, cache.news,
     )
 
-    if _last_logged_signal.get(symbol) != ai_signal.signal:
+    journal_key = f"{ai_signal.signal}:{round(ai_signal.confidence, 0)}"
+    should_log_signal = _last_logged_signal.get(symbol) != ai_signal.signal
+    should_record_journal = _last_journal_key.get(symbol) != journal_key
+
+    if should_log_signal:
         log_signal(symbol, ai_signal, price, change_pct, meters.model_dump())
         _last_logged_signal[symbol] = ai_signal.signal
 
-    journal_key = f"{ai_signal.signal}:{round(ai_signal.confidence, 0)}"
-    if _last_journal_key.get(symbol) != journal_key:
+    if should_record_journal:
         record_signal(symbol, ai_signal, regime, conf)
         _last_journal_key[symbol] = journal_key
 
+    if should_record_journal or should_log_signal:
+        meta = _ticker_meta_cache.get(symbol, {})
+        record_analytics_signal(
+            symbol,
+            ai_signal,
+            decision,
+            meters,
+            market_status=get_us_market_session(),
+            sector=meta.get("sector", ""),
+            industry=meta.get("industry", ""),
+        )
+
     evaluate_open_trades(symbol, price)
+    update_analytics_tracks(symbol, price, news_risk=news_risk.risk_score if news_risk else 0.0)
 
     return StockSnapshot(
         symbol=symbol,
@@ -180,15 +199,25 @@ async def _ensure_news(symbol: str, client: PolygonClient, cache: SymbolCache, c
 
 
 async def _get_name(symbol: str, client: PolygonClient) -> str:
-    if symbol in _name_cache:
-        return _name_cache[symbol]
+    meta = await _get_ticker_meta(symbol, client)
+    return meta["name"]
+
+
+async def _get_ticker_meta(symbol: str, client: PolygonClient) -> dict[str, str]:
+    if symbol in _ticker_meta_cache:
+        return _ticker_meta_cache[symbol]
     try:
         details = await client.get_ticker_details(symbol)
-        name = details.get("name", symbol)
+        meta = {
+            "name": details.get("name", symbol),
+            "sector": str(details.get("market", "") or ""),
+            "industry": str(details.get("sic_description", "") or ""),
+        }
     except Exception:
-        name = symbol
-    _name_cache[symbol] = name
-    return name
+        meta = {"name": symbol, "sector": "", "industry": ""}
+    _ticker_meta_cache[symbol] = meta
+    _name_cache[symbol] = meta["name"]
+    return meta
 
 
 def _analyze_batch_sync(jobs: list[tuple[str, SymbolCache, float, int, float, float, str]]) -> list[StockSnapshot | None]:
