@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'l10n/ar_localization.dart';
+import '../l10n/ar_localization.dart';
 
 class AppTheme {
   static const Color background = Color(0xFF0D1117);
@@ -36,7 +36,7 @@ class AppTheme {
       ),
       iconTheme: IconThemeData(color: textPrimary),
     ),
-    cardTheme: CardTheme(
+    cardTheme: CardThemeData(
       color: card,
       elevation: 0,
       shape: RoundedRectangleBorder(
