@@ -11,7 +11,7 @@ from typing import Any
 
 import websockets
 
-from config import POLYGON_API_KEY, POLYGON_PLAN, POLYGON_WS_URL, WEBSOCKET_ENABLED
+from config import POLYGON_PLAN, POLYGON_WS_URL, WEBSOCKET_ENABLED, get_polygon_api_key
 from services.polygon_client import PolygonAPIError, PolygonClient
 
 logger = logging.getLogger(__name__)
@@ -78,12 +78,13 @@ async def _wait_ws_auth(ws, timeout: float = 8.0) -> tuple[bool, str]:
 
 
 async def test_websocket(timeout: float = 8.0) -> tuple[bool, str]:
-    if not POLYGON_API_KEY:
+    api_key = get_polygon_api_key()
+    if not api_key:
         return False, "no_api_key"
 
     try:
         async with websockets.connect(POLYGON_WS_URL) as ws:
-            await ws.send(json.dumps({"action": "auth", "params": POLYGON_API_KEY}))
+            await ws.send(json.dumps({"action": "auth", "params": api_key}))
             return await _wait_ws_auth(ws, timeout)
     except asyncio.TimeoutError:
         return False, "timeout"

@@ -11,7 +11,13 @@ from typing import Awaitable, Callable
 
 import websockets
 
-from config import POLYGON_WS_URL, SCANNER_TICK_SECONDS, SCANNER_TOP_N, WEBSOCKET_ENABLED
+from config import (
+    POLYGON_WS_URL,
+    SCANNER_TICK_SECONDS,
+    SCANNER_TOP_N,
+    WEBSOCKET_ENABLED,
+    get_polygon_api_key,
+)
 from services.connection_service import get_connection_status, _wait_ws_auth
 from services.market_scanner_service import market_scanner
 from services.polygon_client import PolygonClient
@@ -151,8 +157,12 @@ class MarketStream:
         self.mode = "websocket_scanner"
         state = market_scanner.get_state()
         symbols = [s.symbol for s in (state.snapshots if state else [])][:SCANNER_TOP_N]
+        api_key = get_polygon_api_key()
+        if not api_key:
+            raise ConnectionError("POLYGON_API_KEY not configured — set env var on Render")
+
         async with websockets.connect(POLYGON_WS_URL, ping_interval=20) as ws:
-            await ws.send(json.dumps({"action": "auth", "params": POLYGON_API_KEY}))
+            await ws.send(json.dumps({"action": "auth", "params": api_key}))
             auth_ok, auth_msg = await _wait_ws_auth(ws)
             if not auth_ok:
                 raise ConnectionError(f"WebSocket auth failed: {auth_msg}")

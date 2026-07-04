@@ -10,8 +10,13 @@ from dotenv import load_dotenv
 _env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(_env_path)
 
-# API key: MASSIVE_API_KEY or POLYGON_API_KEY from backend/.env
-POLYGON_API_KEY: str = os.getenv("MASSIVE_API_KEY") or os.getenv("POLYGON_API_KEY") or ""
+def get_polygon_api_key() -> str:
+    """Load Polygon/Massive API key from environment (Render, .env, or shell)."""
+    return (os.getenv("MASSIVE_API_KEY") or os.getenv("POLYGON_API_KEY") or "").strip()
+
+
+# API key: MASSIVE_API_KEY or POLYGON_API_KEY from backend/.env / Render env
+POLYGON_API_KEY: str = get_polygon_api_key()
 
 POLYGON_PLAN: Literal["free", "starter", "developer", "advanced"] = os.getenv(
     "POLYGON_PLAN", "developer"

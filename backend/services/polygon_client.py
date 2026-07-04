@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from config import POLYGON_API_KEY, POLYGON_BASE_URL, POLYGON_PLAN, RATE_LIMIT_PER_MINUTE
+from config import POLYGON_BASE_URL, POLYGON_PLAN, RATE_LIMIT_PER_MINUTE, get_polygon_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,11 @@ class RateLimiter:
 
 
 class PolygonClient:
-    def __init__(self, api_key: str = POLYGON_API_KEY, plan: str = POLYGON_PLAN):
-        if not api_key:
+    def __init__(self, api_key: str | None = None, plan: str = POLYGON_PLAN):
+        resolved = (api_key or get_polygon_api_key()).strip()
+        if not resolved:
             raise ValueError("API key missing — set MASSIVE_API_KEY or POLYGON_API_KEY in backend/.env")
-        self.api_key = api_key
+        self.api_key = resolved
         self.plan = plan
         self.rate_limiter = RateLimiter(RATE_LIMIT_PER_MINUTE)
         self._client: httpx.AsyncClient | None = None
