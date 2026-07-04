@@ -151,9 +151,9 @@ class _StockAnalysisScreenState extends State<StockAnalysisScreen> {
   String _recommendationSummary(StockAnalysis analysis) {
     final explanation = analysis.tradeDecision?.aiExplanation;
     if (explanation != null && explanation.isNotEmpty) {
-      return explanation.split('\n').first;
+      return ArUi.backendText(explanation.split('\n').first);
     }
-    return analysis.recommendationReason;
+    return ArUi.backendText(analysis.recommendationReason);
   }
 
   @override
@@ -233,11 +233,11 @@ class _StockAnalysisScreenState extends State<StockAnalysisScreen> {
                   const SizedBox(height: 12),
                   Row(
                     children: [
-                      TrendChip(trend: a.trend),
+                      TrendChip(trend: ArUi.trend(a.trend)),
                       const SizedBox(width: 8),
                       ScoreBadge(score: a.score),
                       const SizedBox(width: 8),
-                      RiskBadge(riskLevel: a.riskLevel),
+                      RiskBadge(riskLevel: ArUi.riskLevel(a.riskLevel)),
                     ],
                   ),
                 ],
@@ -316,16 +316,16 @@ class _StockAnalysisScreenState extends State<StockAnalysisScreen> {
                     if (a.tradeDecision!.expectedHoldingTime != null &&
                         a.tradeDecision!.expectedHoldingTime!.isNotEmpty)
                       Text(
-                        'مدة الاحتفاظ: ${a.tradeDecision!.expectedHoldingTime}',
+                        'مدة الاحتفاظ: ${ArUi.backendText(a.tradeDecision!.expectedHoldingTime!)}',
                         style: const TextStyle(color: AppTheme.textSecondary),
                       ),
                     const SizedBox(height: 12),
                     Text('منطقة الدخول: ${formatPrice(a.tradeDecision!.entryZoneLow)} – ${formatPrice(a.tradeDecision!.entryZoneHigh)}'),
                     Text('وقف الخسارة: ${formatPrice(a.tradeDecision!.stopLoss)}'),
-                    Text('TP1: ${formatPrice(a.tradeDecision!.takeProfit1)} · TP2: ${formatPrice(a.tradeDecision!.takeProfit2)}'),
+                    Text('الهدف 1: ${formatPrice(a.tradeDecision!.takeProfit1)} · الهدف 2: ${formatPrice(a.tradeDecision!.takeProfit2)}'),
                     Text('سيولة واردة: ${a.tradeDecision!.liquidityInflow.toStringAsFixed(0)}% · صادرة: ${a.tradeDecision!.liquidityOutflow.toStringAsFixed(0)}%'),
                     Text('مخاطر الفخ: ${a.tradeDecision!.trapRisk.toStringAsFixed(0)}% · الأخبار: ${a.tradeDecision!.newsRisk.toStringAsFixed(0)}%'),
-                    Text('البنية: ${a.tradeDecision!.marketStructure}'),
+                    Text('البنية: ${ArUi.backendText(a.tradeDecision!.marketStructure)}'),
                     const SizedBox(height: 16),
                     if (a.tradeDecision!.factorScores.isNotEmpty)
                       FactorScorePanel(
@@ -337,12 +337,14 @@ class _StockAnalysisScreenState extends State<StockAnalysisScreen> {
                       )
                     else if ((a.tradeDecision!.aiExplanation ?? a.tradeDecision!.triggerReason).isNotEmpty)
                       Text(
-                        a.tradeDecision!.aiExplanation ?? a.tradeDecision!.triggerReason,
+                        ArUi.backendText(
+                          a.tradeDecision!.aiExplanation ?? a.tradeDecision!.triggerReason,
+                        ),
                         style: const TextStyle(color: AppTheme.textSecondary, height: 1.5),
                       ),
                     if (a.tradeDecision!.devilsAdvocate.isNotEmpty) ...[
                       const SizedBox(height: 12),
-                      Text('رأي معارض: ${a.tradeDecision!.devilsAdvocate}'),
+                      Text('رأي معارض: ${ArUi.backendText(a.tradeDecision!.devilsAdvocate)}'),
                     ],
                   ],
                 ),

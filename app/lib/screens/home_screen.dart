@@ -108,7 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (reason.isNotEmpty) ...[
               const SizedBox(height: 12),
               Text(
-                reason,
+                ArUi.backendText(reason),
                 style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
               ),
             ],
@@ -218,7 +218,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              _error!,
+                              ArUi.backendText(_error!),
                               style: const TextStyle(
                                 color: AppTheme.textSecondary,
                                 fontSize: 13,

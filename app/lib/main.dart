@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 
 import 'screens/login_screen.dart';
@@ -21,6 +22,13 @@ class SmartStockApp extends StatelessWidget {
       child: MaterialApp(
         title: 'مساعد الأسهم الذكي',
         debugShowCheckedModeBanner: false,
+        locale: const Locale('ar'),
+        supportedLocales: const [Locale('ar')],
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
         theme: AppTheme.darkTheme,
         builder: (context, child) {
           return Directionality(

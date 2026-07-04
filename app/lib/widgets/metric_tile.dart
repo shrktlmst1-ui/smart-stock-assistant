@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../l10n/ar_localization.dart';
 import '../theme/app_theme.dart';
 
 class MetricTile extends StatelessWidget {
@@ -129,7 +130,7 @@ class TrendChip extends StatelessWidget {
         children: [
           Icon(icon, size: 16, color: color),
           const SizedBox(width: 4),
-          Text(trend, style: TextStyle(color: color, fontSize: 13)),
+          Text(ArUi.trend(trend), style: TextStyle(color: color, fontSize: 13)),
         ],
       ),
     );
@@ -152,7 +153,7 @@ class RiskBadge extends StatelessWidget {
         border: Border.all(color: color.withOpacity( 0.4)),
       ),
       child: Text(
-        'مخاطرة: $riskLevel',
+        'مخاطرة: ${ArUi.riskLevel(riskLevel)}',
         style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w500),
       ),
     );

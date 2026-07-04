@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/ar_localization.dart';
 import '../theme/app_theme.dart';
 
 /// Minimum institutional gate from backend `MIN_FACTOR_SCORE`.
@@ -86,7 +87,7 @@ class FactorScorePanel extends StatelessWidget {
         final line = lines[i].trim();
         if (line.isEmpty) continue;
         if (line.startsWith('Final blocker:')) break;
-        blockers.add(line.replaceFirst(RegExp(r'^[•\-\*]\s*'), ''));
+        blockers.add(ArUi.backendText(line.replaceFirst(RegExp(r'^[•\-\*]\s*'), '')));
       }
       if (blockers.isNotEmpty) return blockers;
     }
@@ -105,7 +106,7 @@ class FactorScorePanel extends StatelessWidget {
     if (text == null) return null;
     for (final line in text.split('\n')) {
       if (line.startsWith('Final blocker:')) {
-        return line.replaceFirst('Final blocker:', '').trim();
+        return ArUi.backendText(line.replaceFirst('Final blocker:', '').trim());
       }
     }
     return null;
@@ -128,7 +129,7 @@ class FactorScorePanel extends StatelessWidget {
         const SizedBox(height: 12),
         ...kInstitutionalFactorOrder.map(
           (entry) => _FactorScoreRow(
-            label: entry.value,
+            label: ArUi.factorLabel(entry.value),
             score: factorScores[entry.key] ?? 0,
           ),
         ),
@@ -147,7 +148,7 @@ class FactorScorePanel extends StatelessWidget {
               .where((entry) => factorScores.containsKey(entry.key))
               .map(
                 (entry) => _FactorScoreRow(
-                  label: entry.value,
+                  label: ArUi.factorLabel(entry.value),
                   score: factorScores[entry.key] ?? 0,
                 ),
               ),

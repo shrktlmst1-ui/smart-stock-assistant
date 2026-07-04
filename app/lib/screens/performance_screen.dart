@@ -238,7 +238,7 @@ class _ErrorView extends StatelessWidget {
           children: [
             const Icon(Icons.error_outline, color: AppTheme.danger, size: 48),
             const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
+            Text(ArUi.backendText(message), textAlign: TextAlign.center),
             const SizedBox(height: 16),
             ElevatedButton(onPressed: onRetry, child: const Text('إعادة المحاولة')),
           ],
@@ -638,10 +638,10 @@ class _SignalHistoryTile extends StatelessWidget {
                   runSpacing: 6,
                   children: [
                     _DetailChip('دخول', signal.entryPrice.toStringAsFixed(2)),
-                    _DetailChip('SL', signal.stopLoss.toStringAsFixed(2)),
-                    _DetailChip('TP1', signal.target1.toStringAsFixed(2)),
-                    _DetailChip('TP2', signal.target2.toStringAsFixed(2)),
-                    _DetailChip('TP3', signal.target3.toStringAsFixed(2)),
+                    _DetailChip('وقف', signal.stopLoss.toStringAsFixed(2)),
+                    _DetailChip('الهدف 1', signal.target1.toStringAsFixed(2)),
+                    _DetailChip('الهدف 2', signal.target2.toStringAsFixed(2)),
+                    _DetailChip('الهدف 3', signal.target3.toStringAsFixed(2)),
                     _DetailChip('الجودة', ArUi.tradeQuality(signal.tradeQualityLabel)),
                   ],
                 ),

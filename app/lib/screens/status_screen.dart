@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/system_status.dart';
 import '../services/app_state.dart';
+import '../l10n/ar_localization.dart';
 import '../theme/app_theme.dart';
 import '../widgets/stock_card.dart';
 
@@ -110,7 +111,7 @@ class _StatusScreenState extends State<StatusScreen> {
               if (status.error != null) ...[
                 const SizedBox(height: 12),
                 Text(
-                  status.error!,
+                  ArUi.backendText(status.error!),
                   style: const TextStyle(color: AppTheme.danger, fontSize: 13),
                 ),
               ],

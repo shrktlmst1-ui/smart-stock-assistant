@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'l10n/ar_localization.dart';
+
 class AppTheme {
   static const Color background = Color(0xFF0D1117);
   static const Color surface = Color(0xFF161B22);
@@ -96,7 +98,7 @@ class AppTheme {
   }
 
   static Color riskColor(String risk) {
-    switch (risk) {
+    switch (ArUi.riskLevel(risk)) {
       case 'منخفض':
         return accent;
       case 'متوسط':

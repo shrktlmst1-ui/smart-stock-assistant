@@ -1,13 +1,15 @@
 {
-    "name": "smart_stock_assistant",
-    "short_name": "smart_stock_assistant",
+    "name": "مساعد الأسهم الذكي",
+    "short_name": "مساعد الأسهم",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#0D1117",
+    "theme_color": "#58A6FF",
+    "description": "مساعدك الشخصي لمتابعة الأسهم الأمريكية",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
+    "lang": "ar",
+    "dir": "rtl",
     "icons": [
         {
             "src": "icons/Icon-192.png",
