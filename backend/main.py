@@ -8,8 +8,11 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from config import (
     POLYGON_PLAN,
@@ -57,6 +60,26 @@ market_stream = MarketStream()
 ws_clients: set[WebSocket] = set()
 
 _RISK_MAP = {"low": "منخفض", "medium": "متوسط", "high": "مرتفع"}
+
+WEB_ROOT = Path(__file__).resolve().parent.parent / "app" / "build" / "web"
+INDEX_HTML = WEB_ROOT / "index.html"
+
+
+def _web_build_available() -> bool:
+    return INDEX_HTML.is_file()
+
+
+def _safe_web_file(relative_path: str) -> Path | None:
+    """Resolve a file under the Flutter web build directory."""
+    rel = relative_path.lstrip("/")
+    if not rel:
+        return INDEX_HTML if INDEX_HTML.is_file() else None
+    target = (WEB_ROOT / rel).resolve()
+    try:
+        target.relative_to(WEB_ROOT.resolve())
+    except ValueError:
+        return None
+    return target if target.is_file() else None
 
 
 def _signals_to_opportunities(
@@ -139,6 +162,8 @@ app.add_middleware(
 
 @app.get("/")
 def root():
+    if _web_build_available():
+        return FileResponse(INDEX_HTML)
     status = get_connection_status()
     return {
         "message": "Smart Stock Assistant API",
@@ -487,3 +512,14 @@ async def websocket_endpoint(ws: WebSocket):
         pass
     finally:
         ws_clients.discard(ws)
+
+
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    """Serve Flutter web assets; unknown paths return index.html for client routing."""
+    if not _web_build_available():
+        raise HTTPException(status_code=404, detail="Not found")
+    web_file = _safe_web_file(full_path)
+    if web_file is not None:
+        return FileResponse(web_file)
+    return FileResponse(INDEX_HTML)
