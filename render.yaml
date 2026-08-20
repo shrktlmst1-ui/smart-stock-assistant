@@ -30,7 +30,7 @@ services:
       - key: POLYGON_API_KEY
         sync: false
       - key: APP_PASSWORD
-        value: SmartStock2026!
+        value: "SmartStock2026!"
       - key: APP_JWT_SECRET
         generateValue: true
 
