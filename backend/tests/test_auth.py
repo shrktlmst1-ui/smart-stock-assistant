@@ -120,3 +120,50 @@ def test_websocket_rejects_invalid_token(client: TestClient):
         ws.send_text(json.dumps({"type": "auth", "token": "not-a-valid-token"}))
         with pytest.raises(Exception):
             ws.receive_text()
+
+
+WEB_ORIGIN = "https://smart-stock-assistant-web.onrender.com"
+
+
+def test_cors_on_login_and_opportunities(client: TestClient, auth_headers: dict):
+    login = client.post(
+        "/auth/login",
+        json={"password": TEST_PASSWORD},
+        headers={"Origin": WEB_ORIGIN},
+    )
+    assert login.status_code == 200
+    assert login.headers.get("access-control-allow-origin") == WEB_ORIGIN
+
+    token = login.json()["access_token"]
+    opp = client.get(
+        "/stocks/opportunities?limit=20",
+        headers={
+            "Origin": WEB_ORIGIN,
+            "Authorization": f"Bearer {token}",
+        },
+    )
+    assert opp.status_code == 200
+    assert opp.headers.get("access-control-allow-origin") == WEB_ORIGIN
+
+
+def test_cors_on_unauthorized_opportunities(client: TestClient):
+    resp = client.get(
+        "/stocks/opportunities?limit=20",
+        headers={"Origin": WEB_ORIGIN},
+    )
+    assert resp.status_code == 401
+    assert resp.headers.get("access-control-allow-origin") == WEB_ORIGIN
+
+
+def test_cors_preflight_opportunities(client: TestClient):
+    resp = client.options(
+        "/stocks/opportunities",
+        headers={
+            "Origin": WEB_ORIGIN,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == WEB_ORIGIN
+    assert "authorization" in resp.headers.get("access-control-allow-headers", "").lower()

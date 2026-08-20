@@ -77,8 +77,10 @@ SCANNER_BOARD_SIZE: int = int(os.getenv("SCANNER_BOARD_SIZE", "20"))
 POLYGON_BASE_URL: str = "https://api.polygon.io"
 POLYGON_WS_URL: str = "wss://socket.polygon.io/stocks"
 
-# Local dev origins (production UI is same-origin with API on Render).
+# Production + local dev origins for cross-origin Flutter web.
 REQUIRED_CORS_ORIGINS: tuple[str, ...] = (
+    "https://smart-stock-assistant-web.onrender.com",
+    "https://smart-stock-assistant.onrender.com",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",

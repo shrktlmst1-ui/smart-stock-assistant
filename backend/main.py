@@ -217,15 +217,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Auth runs inside CORS so 401/503/error responses still receive CORS headers.
+app.add_middleware(AuthMiddleware, web_file_resolver=_safe_web_file)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
     allow_origin_regex=r"https://[a-z0-9-]+\.onrender\.com",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
-app.add_middleware(AuthMiddleware, web_file_resolver=_safe_web_file)
 
 
 @app.post("/auth/login", response_model=LoginResponse)
