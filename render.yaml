@@ -33,3 +33,14 @@ services:
         sync: false
       - key: APP_JWT_SECRET
         sync: false
+
+  - type: web
+    name: smart-stock-assistant-web
+    runtime: static
+    rootDir: app
+    buildCommand: bash render_build.sh
+    staticPublishPath: build/web
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
