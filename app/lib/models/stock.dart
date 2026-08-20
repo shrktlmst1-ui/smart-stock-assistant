@@ -1,3 +1,5 @@
+import '../utils/json_parse.dart';
+
 class TradeDecision {
   final String recommendation;
   final String? professionalSignal;
@@ -116,6 +118,10 @@ class StockOpportunity {
   final int score;
   final String trend;
   final String riskLevel;
+  final int confirmedFactors;
+  final int totalFactors;
+  final bool safetyPassed;
+  final String statusReasonAr;
 
   StockOpportunity({
     required this.symbol,
@@ -125,6 +131,10 @@ class StockOpportunity {
     required this.score,
     required this.trend,
     required this.riskLevel,
+    this.confirmedFactors = 0,
+    this.totalFactors = 17,
+    this.safetyPassed = false,
+    this.statusReasonAr = '',
   });
 
   factory StockOpportunity.fromJson(Map<String, dynamic> json) {
@@ -136,6 +146,10 @@ class StockOpportunity {
       score: (json['score'] as num?)?.toInt() ?? 0,
       trend: json['trend'] as String? ?? 'محايد',
       riskLevel: json['risk_level'] as String? ?? 'متوسط',
+      confirmedFactors: (json['confirmed_factors'] as num?)?.toInt() ?? 0,
+      totalFactors: (json['total_factors'] as num?)?.toInt() ?? 17,
+      safetyPassed: readJsonBool(json, ['safety_passed', 'safetyPassed']),
+      statusReasonAr: json['status_reason_ar'] as String? ?? '',
     );
   }
 }
@@ -144,9 +158,15 @@ class ScannerStageCounts {
   final String marketStatus;
   final int symbolsScanned;
   final int universeSymbols;
+  final int phase1QuickScanned;
+  final int phase2RankedCandidates;
+  final int phase3DeepCompleted;
   final int passedLiquidity;
   final int deepAnalysisCompleted;
   final int passedAllFilters;
+  final int passedSafety;
+  final double marketCoveragePct;
+  final String lastFullScanAt;
   final int signalAvoid;
   final int signalWait;
   final Map<String, int> filterFailures;
@@ -155,9 +175,15 @@ class ScannerStageCounts {
     required this.marketStatus,
     required this.symbolsScanned,
     required this.universeSymbols,
+    required this.phase1QuickScanned,
+    required this.phase2RankedCandidates,
+    required this.phase3DeepCompleted,
     required this.passedLiquidity,
     required this.deepAnalysisCompleted,
     required this.passedAllFilters,
+    required this.passedSafety,
+    required this.marketCoveragePct,
+    required this.lastFullScanAt,
     required this.signalAvoid,
     required this.signalWait,
     required this.filterFailures,
@@ -169,9 +195,15 @@ class ScannerStageCounts {
         marketStatus: 'CLOSED',
         symbolsScanned: 0,
         universeSymbols: 0,
+        phase1QuickScanned: 0,
+        phase2RankedCandidates: 0,
+        phase3DeepCompleted: 0,
         passedLiquidity: 0,
         deepAnalysisCompleted: 0,
         passedAllFilters: 0,
+        passedSafety: 0,
+        marketCoveragePct: 0,
+        lastFullScanAt: '',
         signalAvoid: 0,
         signalWait: 0,
         filterFailures: {},
@@ -182,9 +214,15 @@ class ScannerStageCounts {
       marketStatus: json['market_status'] as String? ?? 'CLOSED',
       symbolsScanned: (json['symbols_scanned'] as num?)?.toInt() ?? 0,
       universeSymbols: (json['universe_symbols'] as num?)?.toInt() ?? 0,
+      phase1QuickScanned: (json['phase1_quick_scanned'] as num?)?.toInt() ?? 0,
+      phase2RankedCandidates: (json['phase2_ranked_candidates'] as num?)?.toInt() ?? 0,
+      phase3DeepCompleted: (json['phase3_deep_completed'] as num?)?.toInt() ?? 0,
       passedLiquidity: (json['passed_liquidity'] as num?)?.toInt() ?? 0,
       deepAnalysisCompleted: (json['deep_analysis_completed'] as num?)?.toInt() ?? 0,
       passedAllFilters: (json['passed_all_filters'] as num?)?.toInt() ?? 0,
+      passedSafety: (json['passed_safety'] as num?)?.toInt() ?? (json['passed_all_filters'] as num?)?.toInt() ?? 0,
+      marketCoveragePct: (json['market_coverage_pct'] as num?)?.toDouble() ?? 0,
+      lastFullScanAt: json['last_full_scan_at'] as String? ?? '',
       signalAvoid: (json['signal_avoid'] as num?)?.toInt() ?? 0,
       signalWait: (json['signal_wait'] as num?)?.toInt() ?? 0,
       filterFailures: failures.map((k, v) => MapEntry(k, (v as num).toInt())),

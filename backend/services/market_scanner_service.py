@@ -1,4 +1,4 @@
-"""Institutional AI Scanner — universe manager, threaded coarse scan, deep top 20."""
+"""Institutional AI Scanner — full-market phased scan with round-robin deep analysis."""
 
 from __future__ import annotations
 
@@ -7,16 +7,24 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from analysis.safety_gates import (
+    TOTAL_INSTITUTIONAL_FACTORS,
+    count_confirmed_factors,
+    passes_automatic_price,
+    safety_passed_snapshot,
+    status_reason_ar,
+)
 from config import (
     SCANNER_BOARD_SIZE,
+    SCANNER_DEEP_BATCH,
     SCANNER_DEEP_POOL,
     SCANNER_MIN_DAY_VOLUME,
+    SCANNER_RANK_POOL,
     SCANNER_TICK_SECONDS,
     SCANNER_TOP_N,
     SCANNER_UNIVERSE_REFRESH_SECONDS,
 )
 from analysis.professional_decision import (
-    FACTOR_WEIGHTS,
     MIN_FACTOR_SCORE,
     MIN_PROFESSIONAL_SCORE,
     REQUIRED_INSTITUTIONAL_FACTORS,
@@ -62,23 +70,26 @@ BOARD_TITLES = {
 
 
 class MarketScannerService:
-    """Phase 3 — full US market, no fixed watchlist."""
+    """Full US market — Phase 1 snapshot, Phase 2 rank pool, Phase 3 rotating deep analysis."""
 
     def __init__(self) -> None:
         self.client = PolygonClient()
         self._scored_metrics: list[tuple[TickerMetrics, float]] = []
+        self._rank_pool: list[str] = []
         self._candidate_symbols: list[str] = []
+        self._deep_rotation_index: int = 0
         self._snapshots: dict[str, StockSnapshot] = {}
         self._snapshot_raw: dict[str, dict] = {}
         self._universe_updated: float = 0.0
+        self._last_full_scan_at: str = ""
         self._last_state: MarketScanState | None = None
         self.last_tick_ms: float = 0.0
         self.universe_size: int = 0
         self.market_session: MarketSession = "CLOSED"
+        self._pinned_symbols: set[str] = set()
 
     @staticmethod
     def _is_watchlist_candidate(snap: StockSnapshot) -> bool:
-        """High-quality pre/post-market candidates — full analysis, no threshold bypass."""
         td = snap.trade_decision
         score = td.professional_ai_score or snap.ai_signal.ai_score
         signal = (td.professional_signal or td.recommendation or "WAIT").upper()
@@ -88,7 +99,10 @@ class MarketScannerService:
             return False
         if td.news_risk >= 60:
             return False
-        return score >= MIN_PROFESSIONAL_SCORE
+        safety_ok, _ = safety_passed_snapshot(snap)
+        if not safety_ok:
+            return False
+        return score >= MIN_PROFESSIONAL_SCORE - 8
 
     @staticmethod
     def _ai_score(snap: StockSnapshot) -> float:
@@ -102,25 +116,26 @@ class MarketScannerService:
     @staticmethod
     def _rejection_reason(snap: StockSnapshot) -> str:
         td = snap.trade_decision
-        signal = (td.professional_signal or td.recommendation or "WAIT").upper()
-        if td.all_filters_passed and signal in ("BUY", "SELL"):
-            return "Passed all institutional filters"
-        if td.final_blocker:
-            return td.final_blocker
-        if td.buy_blockers:
-            return td.buy_blockers[0]
+        safety_ok, safety_reasons = safety_passed_snapshot(snap)
+        confirmed = count_confirmed_factors(td.factor_scores)
+        score = td.professional_ai_score or snap.ai_signal.ai_score
+        if safety_ok and score >= MIN_PROFESSIONAL_SCORE:
+            return status_reason_ar(
+                safety_ok=True,
+                safety_reasons=[],
+                score=score,
+                confirmed=confirmed,
+            )
+        if not safety_ok:
+            return "، ".join(safety_reasons[:4])
         failed = MarketScannerService._failed_factors(snap)
         parts: list[str] = []
         if failed:
-            labels = [f.replace("_", " ") for f in failed[:6]]
-            parts.append(f"Failed institutional ({len(failed)}/{len(REQUIRED_INSTITUTIONAL_FACTORS)}): {', '.join(labels)}")
-        if signal == "AVOID":
-            parts.append("Signal AVOID (trap/news risk)")
-        elif (td.professional_ai_score or snap.ai_signal.ai_score) < MIN_PROFESSIONAL_SCORE:
-            parts.append(f"AI score below {MIN_PROFESSIONAL_SCORE}")
-        elif not td.all_filters_passed:
-            parts.append("Required institutional gates not passed")
-        return "; ".join(parts) if parts else "Awaiting stronger confluence"
+            labels = [f.replace("_", " ") for f in failed[:4]]
+            parts.append(f"عوامل ضعيفة ({len(failed)}/{TOTAL_INSTITUTIONAL_FACTORS}): {', '.join(labels)}")
+        if score < MIN_PROFESSIONAL_SCORE:
+            parts.append(f"الدرجة {score:.0f} أقل من {MIN_PROFESSIONAL_SCORE:.0f}")
+        return "; ".join(parts) if parts else "بانتظار تحسن الزخم"
 
     @staticmethod
     def _aggregate_filter_failures(snapshots: list[StockSnapshot]) -> dict[str, int]:
@@ -130,26 +145,72 @@ class MarketScannerService:
                 counts[factor] = counts.get(factor, 0) + 1
         return dict(sorted(counts.items(), key=lambda x: -x[1]))
 
+    def _preserved_symbols(self) -> set[str]:
+        preserved = set(self._pinned_symbols)
+        if self._last_state:
+            for sig in self._last_state.watchlist_candidates + self._last_state.top_opportunities:
+                preserved.add(sig.symbol.upper())
+        return preserved
+
+    def _select_deep_batch(self) -> list[str]:
+        """Round-robin deep analysis — top priority + rotating slice from rank pool."""
+        preserved = self._preserved_symbols()
+        pool = list(self._rank_pool)
+        if not pool:
+            return list(preserved)
+
+        priority_n = min(30, len(pool))
+        priority = pool[:priority_n]
+
+        rotate_pool = pool[priority_n:] or pool
+        batch: list[str] = []
+        if rotate_pool:
+            start = self._deep_rotation_index % len(rotate_pool)
+            for i in range(min(SCANNER_DEEP_BATCH, len(rotate_pool))):
+                batch.append(rotate_pool[(start + i) % len(rotate_pool)])
+            self._deep_rotation_index = (start + len(batch)) % max(len(rotate_pool), 1)
+
+        symbols: list[str] = []
+        seen: set[str] = set()
+        for sym in list(preserved) + priority + batch:
+            upper = sym.upper()
+            if upper not in seen:
+                seen.add(upper)
+                symbols.append(upper)
+            if len(symbols) >= SCANNER_DEEP_POOL:
+                break
+        self._candidate_symbols = symbols
+        return symbols
+
     @staticmethod
     def _build_stage_counts(
         session: MarketSession,
         symbols_scanned: int,
         universe_symbols: int,
         passed_liquidity: int,
+        phase2_count: int,
         analyzed: list[StockSnapshot],
-        passed_all: int,
+        passed_safety: int,
+        last_full_scan_at: str,
     ) -> ScannerStageCounts:
         signals = [
             (s.trade_decision.professional_signal or s.trade_decision.recommendation or "WAIT").upper()
             for s in analyzed
         ]
+        coverage = round(symbols_scanned / universe_symbols * 100, 1) if universe_symbols > 0 else 0.0
         return ScannerStageCounts(
             market_status=session,
             symbols_scanned=symbols_scanned,
             universe_symbols=universe_symbols,
+            phase1_quick_scanned=symbols_scanned,
+            phase2_ranked_candidates=phase2_count,
+            phase3_deep_completed=len(analyzed),
             passed_liquidity=passed_liquidity,
             deep_analysis_completed=len(analyzed),
-            passed_all_filters=passed_all,
+            passed_all_filters=passed_safety,
+            passed_safety=passed_safety,
+            market_coverage_pct=coverage,
+            last_full_scan_at=last_full_scan_at,
             signal_avoid=sum(1 for s in signals if s == "AVOID"),
             signal_wait=sum(1 for s in signals if s == "WAIT"),
             signal_buy=sum(1 for s in signals if s == "BUY"),
@@ -163,30 +224,28 @@ class MarketScannerService:
         symbols_scanned: int,
         passed_liquidity: int,
         deep_count: int,
-        passed_all: int,
+        passed_safety: int,
         filter_failures: dict[str, int],
     ) -> str:
         if passed_liquidity == 0:
             return (
-                f"Market is {session}. Scanned {symbols_scanned:,} snapshot tickers; "
-                f"none passed live liquidity filters (min day volume, RVOL, spread, market cap)."
+                f"السوق {session}. تم فحص {symbols_scanned:,} رمزًا؛ "
+                f"لم يجتز أي رمز فلاتر السيولة الأولية (0–10$)."
             )
         if deep_count == 0:
+            return f"{passed_liquidity} رمزًا اجتاز الفحص السريع لكن التحليل العميق لم يُكمل بعد."
+        if passed_safety == 0:
+            top_fail = "، ".join(list(filter_failures.keys())[:4]) if filter_failures else "عوامل متعددة"
             return (
-                f"{passed_liquidity} symbol(s) passed liquidity but deep analysis returned no snapshots."
-            )
-        if passed_all == 0:
-            top_fail = ", ".join(list(filter_failures.keys())[:5]) if filter_failures else "multiple factors"
-            return (
-                f"{deep_count} symbol(s) completed full SMC/trend/momentum analysis; "
-                f"none passed all {len(REQUIRED_INSTITUTIONAL_FACTORS)} institutional factor gates (min {MIN_FACTOR_SCORE:.0f} each). "
-                f"Most common failures: {top_fail}."
+                f"{deep_count} رمزًا خضع لتحليل عميق؛ "
+                f"لا يوجد مرشح اجتاز شروط الأمان حاليًا. أضعف العوامل: {top_fail}."
             )
         return ""
 
     @staticmethod
     def _top_watchlist_by_score(snapshots: list[StockSnapshot], limit: int = WATCHLIST_DISPLAY_N) -> list[StockSnapshot]:
-        return sorted(snapshots, key=MarketScannerService._ai_score, reverse=True)[:limit]
+        eligible = [s for s in snapshots if passes_automatic_price(s.price)]
+        return sorted(eligible, key=MarketScannerService._ai_score, reverse=True)[:limit]
 
     def get_snapshots(self) -> list[dict]:
         return [s.model_dump() for s in self._snapshots.values()]
@@ -202,6 +261,7 @@ class MarketScannerService:
             raw = await self.client.get_full_market_snapshot()
             self.universe_size = len(raw)
             self._snapshot_raw = {(i.get("ticker") or "").upper(): i for i in raw if i.get("ticker")}
+            self._last_full_scan_at = datetime.now(timezone.utc).isoformat()
 
             if not is_regular_session(self.market_session):
                 adv_candidates: list[str] = []
@@ -224,17 +284,17 @@ class MarketScannerService:
                 coarse_scan_threaded, raw, universe_manager, None, self.market_session,
             )
             self._scored_metrics = scored
-            self._candidate_symbols = [m.symbol for m, _ in scored[:SCANNER_DEEP_POOL]]
+            self._rank_pool = [m.symbol for m, _ in scored[:SCANNER_RANK_POOL]]
             self._universe_updated = time.monotonic()
 
             ustats = universe_manager.stats()
             elapsed = (time.monotonic() - t0) * 1000
             logger.info(
-                "Institutional scan: market=%d universe=%d liquid=%d deep_pool=%d session=%s (%.0fms)",
+                "Full market scan: snapshot=%d universe=%d liquid=%d rank_pool=%d session=%s (%.0fms)",
                 self.universe_size,
                 ustats.get("total", 0),
                 len(scored),
-                len(self._candidate_symbols),
+                len(self._rank_pool),
                 self.market_session,
                 elapsed,
             )
@@ -248,6 +308,8 @@ class MarketScannerService:
         def rows_from(ms: list[TickerMetrics], reason_fn) -> list[ScanRow]:
             out: list[ScanRow] = []
             for m in ms[:n]:
+                if not passes_automatic_price(m.price):
+                    continue
                 snap = snapshots.get(m.symbol)
                 if snap and snap.trade_decision.professional_ai_score:
                     ai = snap.trade_decision.professional_ai_score
@@ -260,7 +322,10 @@ class MarketScannerService:
                 out.append(ScanRow(**row_data))
             return out
 
-        liquid = [m for m, _ in self._scored_metrics] if self._scored_metrics else metrics
+        liquid = [
+            m for m, _ in self._scored_metrics
+            if passes_automatic_price(m.price)
+        ] if self._scored_metrics else [m for m in metrics if passes_automatic_price(m.price)]
 
         return [
             ScannerBoard(board_type="most_active", title=BOARD_TITLES["most_active"],
@@ -294,14 +359,16 @@ class MarketScannerService:
                 inst.append(m)
         return inst or sorted(liquid, key=lambda x: x.relative_volume, reverse=True)[:SCANNER_BOARD_SIZE]
 
-    @staticmethod
-    def _snapshot_to_signal(snap: StockSnapshot, *, watchlist: bool = False) -> ScanSignalSummary:
+    def _snapshot_to_signal(self, snap: StockSnapshot, *, watchlist: bool = False) -> ScanSignalSummary:
         td = snap.trade_decision
         sm = snap.smart_money
         traps = snap.liquidity_traps
         vl = snap.volume_liquidity
         smc = snap.smc
-        failed = MarketScannerService._failed_factors(snap)
+        failed = self._failed_factors(snap)
+        safety_ok, safety_reasons = safety_passed_snapshot(snap)
+        confirmed = count_confirmed_factors(td.factor_scores)
+        score = td.professional_ai_score or snap.ai_signal.ai_score
 
         return ScanSignalSummary(
             symbol=snap.symbol,
@@ -314,7 +381,7 @@ class MarketScannerService:
             take_profit_2=td.take_profit_2,
             risk_reward_ratio=td.risk_reward_ratio,
             confidence=td.ai_confidence,
-            ai_score=td.professional_ai_score or snap.ai_signal.ai_score,
+            ai_score=score,
             ai_explanation=td.ai_explanation or td.trigger_reason,
             trap_risk=td.trap_risk,
             smart_money_score=snap.meters.institutional_activity,
@@ -323,8 +390,17 @@ class MarketScannerService:
             recommendation=td.professional_signal or td.recommendation,
             expected_holding_time=td.expected_holding_time,
             all_filters_passed=td.all_filters_passed,
+            safety_passed=safety_ok,
+            confirmed_factors=confirmed,
+            total_factors=TOTAL_INSTITUTIONAL_FACTORS,
+            status_reason_ar=status_reason_ar(
+                safety_ok=safety_ok,
+                safety_reasons=safety_reasons,
+                score=score,
+                confirmed=confirmed,
+            ),
             failed_factors=failed,
-            rejection_reason=MarketScannerService._rejection_reason(snap) if watchlist or not td.all_filters_passed else "",
+            rejection_reason=self._rejection_reason(snap) if watchlist or not safety_ok else "",
             bos=smc.bos,
             choch=smc.choch,
             order_block=len(smc.order_blocks) > 0,
@@ -349,33 +425,38 @@ class MarketScannerService:
         if now_mono - self._universe_updated > SCANNER_UNIVERSE_REFRESH_SECONDS or not self._scored_metrics:
             await self.refresh_universe()
 
-        if not self._candidate_symbols:
+        deep_symbols = self._select_deep_batch()
+        if not deep_symbols:
             self.last_tick_ms = (time.monotonic() - t0) * 1000
             return self._empty_state()
 
         try:
-            snapshots = await build_snapshots_batch(self._candidate_symbols, self.client)
+            snapshots = await build_snapshots_batch(deep_symbols, self.client)
         except Exception as e:
             logger.error("Deep analysis batch failed: %s", e)
             snapshots = []
 
         for snap in snapshots:
-            if snap:
+            if snap and passes_automatic_price(snap.price):
                 self._snapshots[snap.symbol] = snap
 
-        analyzed = [s for s in snapshots if s]
+        analyzed = [s for s in snapshots if s and passes_automatic_price(s.price)]
         ustats = universe_manager.stats()
 
-        qualified = [s for s in analyzed if s.trade_decision.all_filters_passed]
-        ranked = sorted(qualified, key=self._ai_score, reverse=True)[:SCANNER_TOP_N]
+        safety_passed = []
+        for s in analyzed:
+            ok, _ = safety_passed_snapshot(s)
+            if ok:
+                safety_passed.append(s)
+
+        ranked = sorted(
+            safety_passed,
+            key=lambda s: (self._ai_score(s), count_confirmed_factors(s.trade_decision.factor_scores)),
+            reverse=True,
+        )[:SCANNER_TOP_N]
 
         if regular:
             watchlist_ranked = self._top_watchlist_by_score(analyzed, WATCHLIST_DISPLAY_N)
-            if len(ranked) < SCANNER_TOP_N:
-                logger.info(
-                    "Institutional filter: %d/%d passed all factors (session=REGULAR)",
-                    len(ranked), SCANNER_TOP_N,
-                )
         else:
             watchlist_ranked = sorted(
                 [s for s in analyzed if self._is_watchlist_candidate(s)],
@@ -384,12 +465,6 @@ class MarketScannerService:
             )[:SCANNER_TOP_N]
             if not watchlist_ranked:
                 watchlist_ranked = self._top_watchlist_by_score(analyzed, WATCHLIST_DISPLAY_N)
-            logger.info(
-                "Watchlist mode (%s): %d candidates from pool=%d",
-                self.market_session,
-                len(watchlist_ranked),
-                len(analyzed),
-            )
 
         filter_failures = self._aggregate_filter_failures(analyzed)
         debug = self._build_stage_counts(
@@ -397,8 +472,10 @@ class MarketScannerService:
             self.universe_size,
             ustats.get("total", 0),
             len(self._scored_metrics),
+            len(self._rank_pool),
             analyzed,
-            len(ranked),
+            len(safety_passed),
+            self._last_full_scan_at,
         )
         no_signal_reason = self._build_no_signal_reason(
             self.market_session,
@@ -409,13 +486,22 @@ class MarketScannerService:
             filter_failures,
         )
 
-        keep_symbols = {s.symbol for s in ranked} | {s.symbol for s in watchlist_ranked}
-        self._snapshots = {k: v for k, v in self._snapshots.items() if k in keep_symbols}
+        preserved = self._preserved_symbols()
+        keep_symbols = (
+            {s.symbol for s in ranked}
+            | {s.symbol for s in watchlist_ranked}
+            | preserved
+            | set(self._rank_pool[:50])
+        )
+        self._snapshots = {
+            k: v for k, v in self._snapshots.items()
+            if k in keep_symbols and passes_automatic_price(v.price)
+        }
 
         opportunities = [self._snapshot_to_signal(s) for s in ranked]
         watchlist = [self._snapshot_to_signal(s, watchlist=True) for s in watchlist_ranked]
         result_snapshots = ranked if ranked else watchlist_ranked
-        liquid_metrics = [m for m, _ in self._scored_metrics]
+        liquid_metrics = [m for m, _ in self._scored_metrics if passes_automatic_price(m.price)]
         boards = self._build_boards(liquid_metrics, self._snapshots)
 
         explanation = "" if regular else session_explanation(self.market_session)
@@ -427,6 +513,8 @@ class MarketScannerService:
             universe_size=self.universe_size,
             liquid_count=len(self._scored_metrics),
             candidate_pool=len(self._candidate_symbols),
+            rank_pool_size=len(self._rank_pool),
+            deep_rotation_index=self._deep_rotation_index,
             market_status=self.market_session,
             top_opportunities=opportunities,
             watchlist_candidates=watchlist,
@@ -455,6 +543,8 @@ class MarketScannerService:
             universe_size=self.universe_size,
             liquid_count=len(self._scored_metrics),
             candidate_pool=0,
+            rank_pool_size=len(self._rank_pool),
+            deep_rotation_index=self._deep_rotation_index,
             market_status=session,
             explanation="" if is_regular_session(session) else session_explanation(session),
             no_signal_reason=no_signal,
@@ -462,7 +552,10 @@ class MarketScannerService:
                 market_status=session,
                 symbols_scanned=self.universe_size,
                 universe_symbols=ustats.get("total", 0),
+                phase1_quick_scanned=self.universe_size,
+                phase2_ranked_candidates=len(self._rank_pool),
                 passed_liquidity=len(self._scored_metrics),
+                last_full_scan_at=self._last_full_scan_at,
             ),
             last_tick_ms=round(self.last_tick_ms, 1),
             scan_interval_seconds=SCANNER_TICK_SECONDS,

@@ -110,7 +110,7 @@ def test_opportunity_now_when_score_high_and_market_open():
     snap = _strong_snap()
     sig = svc._snapshot_to_signal(snap, market_open=True)
     assert sig is not None
-    assert sig.score >= 85
+    assert sig.score >= 80
     assert sig.status == "فرصة الآن"
 
 

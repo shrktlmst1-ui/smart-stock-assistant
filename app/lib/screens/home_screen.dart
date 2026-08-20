@@ -236,8 +236,8 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 4),
           Text(
             showingWatchlist
-                ? 'أعلى درجات التحليل — ليست إشارات دخول حتى اجتياز جميع الفلاتر'
-                : 'السوق الأمريكي المباشر — يجب اجتياز 18 عاملاً',
+                ? 'أعلى درجات التحليل — مراقبة حتى اجتياز شروط الأمان'
+                : 'السوق الأمريكي — أسهم حتى 10 دولارات مع شروط أمان إلزامية',
             style: const TextStyle(color: AppTheme.textSecondary),
           ),
         ],
@@ -272,11 +272,14 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
             const SizedBox(height: 12),
-            _DebugRow('الأسهم المفحوصة', '${d.symbolsScanned}'),
-            _DebugRow('إجمالي الأسهم', '${d.universeSymbols}'),
+            _DebugRow('المرحلة 1 — فحص سريع', '${d.phase1QuickScanned > 0 ? d.phase1QuickScanned : d.symbolsScanned}'),
+            _DebugRow('المرحلة 2 — مرشحون', '${d.phase2RankedCandidates}'),
+            _DebugRow('المرحلة 3 — تحليل عميق', '${d.phase3DeepCompleted > 0 ? d.phase3DeepCompleted : d.deepAnalysisCompleted}'),
+            _DebugRow('تغطية السوق', '${d.marketCoveragePct.toStringAsFixed(1)}%'),
+            if (d.lastFullScanAt.isNotEmpty)
+              _DebugRow('آخر مسح كامل', _shortScanTime(d.lastFullScanAt)),
             _DebugRow('اجتازت السيولة', '${d.passedLiquidity}'),
-            _DebugRow('تحليل عميق', '${d.deepAnalysisCompleted}'),
-            _DebugRow('اجتازت جميع الفلاتر 18', '${d.passedAllFilters}'),
+            _DebugRow('اجتازت شروط الأمان', '${d.passedSafety > 0 ? d.passedSafety : d.passedAllFilters}'),
             if (d.signalWait > 0 || d.signalAvoid > 0) ...[
               const SizedBox(height: 8),
               Text(
@@ -295,6 +298,11 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  String _shortScanTime(String iso) {
+    if (iso.length >= 16) return iso.substring(11, 16);
+    return iso;
   }
 
   Widget _buildOpportunitiesSection() {

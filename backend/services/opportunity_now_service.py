@@ -157,17 +157,17 @@ def _score_components(snap: StockSnapshot, *, spread: float, rvol: float, vwap: 
 
 
 def _status_from_score(score: float, *, safety_failed: bool, market_open: bool) -> str:
-    if safety_failed or score < 65:
+    if safety_failed or score < 60:
         return "تجنب"
-    if score >= 85 and market_open:
+    if score >= 80 and market_open:
         return "فرصة الآن"
-    if score >= 75:
+    if score >= 70:
         return "استعد"
     return "مراقبة"
 
 
 def _risk_level(score: float, spread: float) -> str:
-    if score >= 85 and spread <= 0.3:
+    if score >= 80 and spread <= 0.3:
         return "منخفض"
     if score >= 70:
         return "متوسط"
@@ -203,12 +203,15 @@ def _collect_snapshots() -> list[StockSnapshot]:
 
     state = market_scanner.get_state()
     symbols: list[str] = []
+
     if state:
         for row in state.top_opportunities + state.watchlist_candidates:
             symbols.append(row.symbol.upper())
         for snap in state.snapshots:
             symbols.append(snap.symbol.upper())
 
+    for sym in market_scanner._rank_pool:
+        symbols.append(sym.upper())
     for sym in market_scanner._candidate_symbols:
         symbols.append(sym.upper())
 
@@ -239,7 +242,7 @@ def _snapshot_to_signal(snap: StockSnapshot, *, market_open: bool) -> Opportunit
     components = _score_components(snap, spread=spread, rvol=rvol, vwap=vwap)
     score = min(100.0, sum(components.values()))
     if safety_failed:
-        score = min(score, 64.0)
+        score = min(score, 59.0)
 
     has_news = _has_news(snap)
     movement_no_news = not has_news and components["liquidity"] >= 15 and components["momentum"] >= 12

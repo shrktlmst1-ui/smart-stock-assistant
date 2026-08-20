@@ -140,6 +140,8 @@ def _signals_to_opportunities(
 ) -> list[StockOpportunity]:
     out: list[StockOpportunity] = []
     for sig in signals:
+        if sig.price <= 0 or sig.price > 10:
+            continue
         snap = snapshots.get(sig.symbol)
         risk = snap.ai_signal.risk_level if snap else "medium"
         out.append(StockOpportunity(
@@ -153,6 +155,10 @@ def _signals_to_opportunities(
             status="انتظار" if watchlist else ("شراء" if sig.recommendation == "ENTRY CONFIRMED" else "انتظار"),
             ai_signal=sig.recommendation,
             confidence=sig.confidence,
+            confirmed_factors=getattr(sig, "confirmed_factors", 0),
+            total_factors=getattr(sig, "total_factors", 17),
+            safety_passed=getattr(sig, "safety_passed", False),
+            status_reason_ar=getattr(sig, "status_reason_ar", "") or sig.rejection_reason,
         ))
     return out
 

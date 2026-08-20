@@ -74,6 +74,10 @@ class StockOpportunity(BaseModel):
     status: StockStatus = "انتظار"
     ai_signal: str = "Wait"
     confidence: float = 50.0
+    confirmed_factors: int = 0
+    total_factors: int = 17
+    safety_passed: bool = False
+    status_reason_ar: str = ""
 
 
 class StockAnalysis(BaseModel):

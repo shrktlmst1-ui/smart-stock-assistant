@@ -88,6 +88,21 @@ class StockCard extends StatelessWidget {
                         RiskBadge(riskLevel: stock.riskLevel),
                         const SizedBox(width: 8),
                         ScoreBadge(score: stock.score),
+                        if (stock.confirmedFactors > 0) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: AppTheme.surface,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: AppTheme.border),
+                            ),
+                            child: Text(
+                              '${stock.confirmedFactors}/${stock.totalFactors}',
+                              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                            ),
+                          ),
+                        ],
                         if (pulseScore != null) ...[
                           const SizedBox(width: 8),
                           Container(
@@ -104,6 +119,18 @@ class StockCard extends StatelessWidget {
                         ],
                       ],
                     ),
+                    if (stock.statusReasonAr.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        stock.statusReasonAr,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: stock.safetyPassed ? AppTheme.success : AppTheme.textSecondary,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
                     if (pulseDecision != null) ...[
                       const SizedBox(height: 6),
                       Text(

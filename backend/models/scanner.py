@@ -60,6 +60,10 @@ class ScanSignalSummary(BaseModel):
     recommendation: str
     expected_holding_time: str = ""
     all_filters_passed: bool = False
+    safety_passed: bool = False
+    confirmed_factors: int = 0
+    total_factors: int = 17
+    status_reason_ar: str = ""
     failed_factors: list[str] = []
     rejection_reason: str = ""
     # Pattern detection flags
@@ -86,13 +90,19 @@ class ScannerBoard(BaseModel):
 
 
 class ScannerStageCounts(BaseModel):
-    """Pipeline funnel — counts only, no strategy changes."""
+    """Pipeline funnel — phased full-market scan."""
     market_status: MarketStatus = "CLOSED"
     symbols_scanned: int = 0
     universe_symbols: int = 0
+    phase1_quick_scanned: int = 0
+    phase2_ranked_candidates: int = 0
+    phase3_deep_completed: int = 0
     passed_liquidity: int = 0
     deep_analysis_completed: int = 0
     passed_all_filters: int = 0
+    passed_safety: int = 0
+    market_coverage_pct: float = 0.0
+    last_full_scan_at: str = ""
     signal_avoid: int = 0
     signal_wait: int = 0
     signal_buy: int = 0
@@ -104,6 +114,8 @@ class MarketScanState(BaseModel):
     universe_size: int = 0
     liquid_count: int = 0
     candidate_pool: int = 0
+    rank_pool_size: int = 0
+    deep_rotation_index: int = 0
     market_status: MarketStatus = "CLOSED"
     top_opportunities: list[ScanSignalSummary] = []
     watchlist_candidates: list[ScanSignalSummary] = []
