@@ -1,23 +1,33 @@
 import 'package:flutter/foundation.dart';
 
 /// Resolves API base URL for REST and WebSocket clients.
-///
-/// - Web production (Render): same origin as the served Flutter app.
-/// - Web local dev (`flutter run -d chrome`): backend on localhost:8000.
-/// - Mobile/desktop: `API_BASE_URL` dart-define or localhost:8000.
 class ApiConfig {
+  /// Production backend (Render Web Service).
+  static const String productionApiBaseUrl =
+      'https://smart-stock-assistant-api.onrender.com';
+
   static String get baseUrl {
+    const fromEnv = String.fromEnvironment('API_BASE_URL');
+    if (fromEnv.isNotEmpty) {
+      return _normalize(fromEnv);
+    }
+
     if (kIsWeb) {
-      final uri = Uri.base;
-      final host = uri.host;
+      final host = Uri.base.host;
       if (host == 'localhost' || host == '127.0.0.1') {
         return 'http://localhost:8000';
       }
-      return uri.origin;
+      return productionApiBaseUrl;
     }
-    return const String.fromEnvironment(
-      'API_BASE_URL',
-      defaultValue: 'http://localhost:8000',
-    );
+
+    return 'http://localhost:8000';
+  }
+
+  static String _normalize(String url) {
+    var trimmed = url.trim();
+    while (trimmed.endsWith('/')) {
+      trimmed = trimmed.substring(0, trimmed.length - 1);
+    }
+    return trimmed;
   }
 }
