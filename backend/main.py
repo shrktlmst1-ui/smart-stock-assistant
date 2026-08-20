@@ -21,9 +21,9 @@ from config import (
     SCANNER_TOP_N,
     WEBSOCKET_ENABLED,
     get_cors_origins,
-    get_app_password_hash,
     is_auth_fully_configured,
     is_auth_jwt_configured,
+    is_auth_password_configured,
     is_production_release,
 )
 from database.signal_analytics_db import init_signal_analytics_db
@@ -196,9 +196,9 @@ async def lifespan(app: FastAPI):
         logger.warning("Flutter web build not found at %s", WEB_ROOT)
     if is_production_release() and not is_auth_fully_configured():
         logger.error(
-            "Auth misconfigured in production: jwt_secret=%s password_hash=%s",
+            "Auth misconfigured in production: jwt_secret=%s password=%s",
             "set" if is_auth_jwt_configured() else "MISSING",
-            "set" if get_app_password_hash() else "MISSING",
+            "set" if is_auth_password_configured() else "MISSING",
         )
     elif not is_auth_jwt_configured():
         logger.warning("APP_JWT_SECRET is not set — protected routes will reject tokens")
@@ -284,6 +284,7 @@ def health():
     return {
         "ok": status.api_connected,
         "auth_jwt_configured": is_auth_jwt_configured(),
+        "auth_password_configured": is_auth_password_configured(),
         "auth_fully_configured": is_auth_fully_configured(),
         "clients": len(ws_clients),
         "snapshots": len(market_stream.get_snapshots()),

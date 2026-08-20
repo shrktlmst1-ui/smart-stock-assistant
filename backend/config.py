@@ -171,6 +171,7 @@ MARKET_PULSE_WS_MAX_CLIENTS: int = int(os.getenv("MARKET_PULSE_WS_MAX_CLIENTS", 
 MARKET_PULSE_FIXTURE_MODE: bool = os.getenv("MARKET_PULSE_FIXTURE_MODE", "false").lower() == "true"
 
 # App authentication (JWT — secrets from env only)
+APP_PASSWORD: str = os.getenv("APP_PASSWORD", "").strip()
 APP_PASSWORD_HASH: str = os.getenv("APP_PASSWORD_HASH", "").strip()
 APP_JWT_SECRET: str = os.getenv("APP_JWT_SECRET", "").strip()
 JWT_ACCESS_TOKEN_MINUTES: int = int(os.getenv("JWT_ACCESS_TOKEN_MINUTES", "480"))
@@ -178,8 +179,13 @@ AUTH_RATE_LIMIT: int = int(os.getenv("AUTH_RATE_LIMIT", "5"))
 AUTH_RATE_WINDOW_SECONDS: int = int(os.getenv("AUTH_RATE_WINDOW_SECONDS", "60"))
 
 
+def get_app_password() -> str:
+    """Plain login password from env (optional — compared in memory with timing-safe digest)."""
+    return os.getenv("APP_PASSWORD", APP_PASSWORD).strip()
+
+
 def get_app_password_hash() -> str:
-    """Read password hash at call time (Render env, not import-time cache)."""
+    """Optional bcrypt hash — when unset, login falls back to APP_PASSWORD."""
     return os.getenv("APP_PASSWORD_HASH", APP_PASSWORD_HASH).strip()
 
 
@@ -188,12 +194,16 @@ def get_app_jwt_secret() -> str:
     return os.getenv("APP_JWT_SECRET", APP_JWT_SECRET).strip()
 
 
+def is_auth_password_configured() -> bool:
+    return bool(get_app_password_hash() or get_app_password())
+
+
 def is_auth_jwt_configured() -> bool:
     return bool(get_app_jwt_secret())
 
 
 def is_auth_fully_configured() -> bool:
-    return bool(get_app_password_hash() and get_app_jwt_secret())
+    return is_auth_password_configured() and is_auth_jwt_configured()
 
 
 def is_pytest_running() -> bool:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -62,16 +63,19 @@ def _client_key(request: Request) -> str:
 
 
 def verify_password(plain_password: str) -> bool:
+    provided = plain_password.encode("utf-8")
+
     password_hash = config.get_app_password_hash()
-    if not password_hash:
+    if password_hash:
+        try:
+            return bcrypt.checkpw(provided, password_hash.encode("utf-8"))
+        except ValueError:
+            return False
+
+    expected = config.get_app_password()
+    if not expected:
         return False
-    try:
-        return bcrypt.checkpw(
-            plain_password.encode("utf-8"),
-            password_hash.encode("utf-8"),
-        )
-    except ValueError:
-        return False
+    return secrets.compare_digest(provided, expected.encode("utf-8"))
 
 
 def create_access_token() -> tuple[str, int]:

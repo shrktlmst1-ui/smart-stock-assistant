@@ -9,7 +9,7 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import TEST_JWT_SECRET, TEST_PASSWORD
+from tests.conftest import TEST_JWT_SECRET, TEST_PASSWORD, TEST_PASSWORD_HASH
 
 
 def test_login_success(client: TestClient):
@@ -51,6 +51,24 @@ def test_protected_route_with_valid_token(client: TestClient, auth_headers: dict
 
 def test_health_public_without_auth(client: TestClient):
     resp = client.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["auth_jwt_configured"] is True
+    assert body["auth_password_configured"] is True
+    assert body["auth_fully_configured"] is True
+
+
+def test_login_with_password_hash_fallback(client: TestClient, monkeypatch):
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
+    monkeypatch.setenv("APP_PASSWORD_HASH", TEST_PASSWORD_HASH)
+    resp = client.post("/auth/login", json={"password": TEST_PASSWORD})
+    assert resp.status_code == 200
+
+
+def test_login_with_plain_password_only(client: TestClient, monkeypatch):
+    monkeypatch.delenv("APP_PASSWORD_HASH", raising=False)
+    monkeypatch.setenv("APP_PASSWORD", TEST_PASSWORD)
+    resp = client.post("/auth/login", json={"password": TEST_PASSWORD})
     assert resp.status_code == 200
 
 

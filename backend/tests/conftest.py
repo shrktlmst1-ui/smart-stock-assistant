@@ -15,7 +15,8 @@ TEST_PASSWORD_HASH = bcrypt.hashpw(TEST_PASSWORD.encode("utf-8"), bcrypt.gensalt
 def _auth_config(monkeypatch):
     import services.auth_service as auth_mod
 
-    monkeypatch.setenv("APP_PASSWORD_HASH", TEST_PASSWORD_HASH)
+    monkeypatch.setenv("APP_PASSWORD", TEST_PASSWORD)
+    monkeypatch.delenv("APP_PASSWORD_HASH", raising=False)
     monkeypatch.setenv("APP_JWT_SECRET", TEST_JWT_SECRET)
     auth_mod._login_limiter._events.clear()
 
