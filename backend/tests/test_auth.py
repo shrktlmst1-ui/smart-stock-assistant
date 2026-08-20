@@ -55,11 +55,9 @@ def test_health_public_without_auth(client: TestClient):
 
 
 def test_expired_token_rejected(client: TestClient, monkeypatch):
-    import config
-
     expired = jwt.encode(
         {"sub": "app_user", "exp": int(time.time()) - 60},
-        config.APP_JWT_SECRET,
+        TEST_JWT_SECRET,
         algorithm="HS256",
     )
     resp = client.get(
@@ -80,6 +78,34 @@ def test_forged_token_rejected(client: TestClient):
         headers={"Authorization": f"Bearer {forged}"},
     )
     assert resp.status_code == 401
+
+
+def test_invalid_token_returns_401_when_jwt_secret_missing(client: TestClient, monkeypatch):
+    monkeypatch.delenv("APP_JWT_SECRET", raising=False)
+    resp = client.get(
+        "/stocks/opportunities?limit=20",
+        headers={"Authorization": "Bearer not.a.valid.jwt"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid or expired token"
+
+
+def test_login_returns_503_when_jwt_secret_missing(client: TestClient, monkeypatch):
+    monkeypatch.delenv("APP_JWT_SECRET", raising=False)
+    resp = client.post("/auth/login", json={"password": TEST_PASSWORD})
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Authentication is not configured"
+
+
+def test_login_then_opportunities_returns_200(client: TestClient):
+    login = client.post("/auth/login", json={"password": TEST_PASSWORD})
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+    opp = client.get(
+        "/stocks/opportunities?limit=20",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert opp.status_code == 200
 
 
 def test_websocket_requires_auth(client: TestClient, auth_headers: dict):

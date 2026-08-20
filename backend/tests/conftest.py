@@ -13,11 +13,10 @@ TEST_PASSWORD_HASH = bcrypt.hashpw(TEST_PASSWORD.encode("utf-8"), bcrypt.gensalt
 
 @pytest.fixture(autouse=True)
 def _auth_config(monkeypatch):
-    import config
     import services.auth_service as auth_mod
 
-    monkeypatch.setattr(config, "APP_PASSWORD_HASH", TEST_PASSWORD_HASH)
-    monkeypatch.setattr(config, "APP_JWT_SECRET", TEST_JWT_SECRET)
+    monkeypatch.setenv("APP_PASSWORD_HASH", TEST_PASSWORD_HASH)
+    monkeypatch.setenv("APP_JWT_SECRET", TEST_JWT_SECRET)
     auth_mod._login_limiter._events.clear()
 
 

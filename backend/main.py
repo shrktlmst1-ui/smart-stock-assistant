@@ -21,6 +21,10 @@ from config import (
     SCANNER_TOP_N,
     WEBSOCKET_ENABLED,
     get_cors_origins,
+    get_app_password_hash,
+    is_auth_fully_configured,
+    is_auth_jwt_configured,
+    is_production_release,
 )
 from database.signal_analytics_db import init_signal_analytics_db
 from database.trade_replay_db import init_trade_replay_db
@@ -190,6 +194,15 @@ async def lifespan(app: FastAPI):
         logger.info("Serving Flutter web UI from %s", WEB_ROOT)
     else:
         logger.warning("Flutter web build not found at %s", WEB_ROOT)
+    if is_production_release() and not is_auth_fully_configured():
+        logger.error(
+            "Auth misconfigured in production: jwt_secret=%s password_hash=%s",
+            "set" if is_auth_jwt_configured() else "MISSING",
+            "set" if get_app_password_hash() else "MISSING",
+        )
+    elif not is_auth_jwt_configured():
+        logger.warning("APP_JWT_SECRET is not set — protected routes will reject tokens")
+
     logger.info("Verifying Polygon/Massive connection...")
     status = await verify_connection()
     logger.info("Connection: %s", status.to_dict())
@@ -270,6 +283,8 @@ def health():
     session = scan.market_status if scan and scan.market_status else get_us_market_session()
     return {
         "ok": status.api_connected,
+        "auth_jwt_configured": is_auth_jwt_configured(),
+        "auth_fully_configured": is_auth_fully_configured(),
         "clients": len(ws_clients),
         "snapshots": len(market_stream.get_snapshots()),
         "live": status.live_market_data_status,

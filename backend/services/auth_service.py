@@ -62,19 +62,21 @@ def _client_key(request: Request) -> str:
 
 
 def verify_password(plain_password: str) -> bool:
-    if not config.APP_PASSWORD_HASH:
+    password_hash = config.get_app_password_hash()
+    if not password_hash:
         return False
     try:
         return bcrypt.checkpw(
             plain_password.encode("utf-8"),
-            config.APP_PASSWORD_HASH.encode("utf-8"),
+            password_hash.encode("utf-8"),
         )
     except ValueError:
         return False
 
 
 def create_access_token() -> tuple[str, int]:
-    if not config.APP_JWT_SECRET:
+    secret = config.get_app_jwt_secret()
+    if not secret:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication is not configured",
@@ -86,18 +88,19 @@ def create_access_token() -> tuple[str, int]:
         "iat": datetime.now(timezone.utc),
         "exp": exp,
     }
-    token = jwt.encode(payload, config.APP_JWT_SECRET, algorithm=JWT_ALGORITHM)
+    token = jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
     return token, expires_in
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
-    if not config.APP_JWT_SECRET:
+    secret = config.get_app_jwt_secret()
+    if not secret:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Authentication is not configured",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
         )
     try:
-        return jwt.decode(token, config.APP_JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return jwt.decode(token, secret, algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

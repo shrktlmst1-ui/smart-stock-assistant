@@ -32,7 +32,7 @@ services:
       - key: APP_PASSWORD_HASH
         sync: false
       - key: APP_JWT_SECRET
-        sync: false
+        generateValue: true
 
   - type: web
     name: smart-stock-assistant-web

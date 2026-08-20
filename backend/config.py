@@ -178,6 +178,24 @@ AUTH_RATE_LIMIT: int = int(os.getenv("AUTH_RATE_LIMIT", "5"))
 AUTH_RATE_WINDOW_SECONDS: int = int(os.getenv("AUTH_RATE_WINDOW_SECONDS", "60"))
 
 
+def get_app_password_hash() -> str:
+    """Read password hash at call time (Render env, not import-time cache)."""
+    return os.getenv("APP_PASSWORD_HASH", APP_PASSWORD_HASH).strip()
+
+
+def get_app_jwt_secret() -> str:
+    """Read JWT secret at call time — same value for encode and decode."""
+    return os.getenv("APP_JWT_SECRET", APP_JWT_SECRET).strip()
+
+
+def is_auth_jwt_configured() -> bool:
+    return bool(get_app_jwt_secret())
+
+
+def is_auth_fully_configured() -> bool:
+    return bool(get_app_password_hash() and get_app_jwt_secret())
+
+
 def is_pytest_running() -> bool:
     import sys
     return "pytest" in sys.modules or bool(os.getenv("PYTEST_CURRENT_TEST"))
