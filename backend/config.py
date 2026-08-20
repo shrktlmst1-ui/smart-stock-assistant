@@ -151,9 +151,6 @@ DEFAULT_RISK_PCT: float = float(os.getenv("DEFAULT_RISK_PCT", "0.5"))
 # Market Pulse — نبض السوق الذكي (Phase 1, disabled by default)
 MARKET_PULSE_ENABLED: bool = os.getenv("MARKET_PULSE_ENABLED", "false").lower() == "true"
 MASSIVE_WS_URL: str = os.getenv("MASSIVE_WS_URL", "wss://socket.massive.com/stocks")
-BENZINGA_NEWS_URL: str = os.getenv(
-    "BENZINGA_NEWS_URL", "https://api.massive.com/benzinga/v2/news"
-)
 MARKET_PULSE_MAX_SYMBOLS: int = int(os.getenv("MARKET_PULSE_MAX_SYMBOLS", "50"))
 MARKET_PULSE_SYMBOL_TTL_SECONDS: int = int(os.getenv("MARKET_PULSE_SYMBOL_TTL_SECONDS", "3600"))
 MARKET_PULSE_ENTER_MIN_SCORE: float = float(os.getenv("MARKET_PULSE_ENTER_MIN_SCORE", "85"))

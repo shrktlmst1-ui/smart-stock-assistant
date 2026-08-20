@@ -64,8 +64,14 @@ class MarketPulseRuntime:
             await self._seed_fixture()
         elif self.engine.has_credentials():
             self.mode = "live"
-            await self.engine.refresh_news()
-            await self.engine.start()
+            try:
+                await self.engine.refresh_news()
+            except Exception as exc:
+                logger.warning("Market pulse initial news fetch failed: %s", type(exc).__name__)
+            try:
+                await self.engine.start()
+            except Exception as exc:
+                logger.warning("Market pulse stream start failed: %s", type(exc).__name__)
         else:
             self.mode = "idle"
             self._running = False

@@ -22,7 +22,7 @@ from market_pulse.providers.base import (
     RawNewsItem,
     TradeTick,
 )
-from market_pulse.providers.benzinga_news import BenzingaNewsProvider
+from market_pulse.providers.reference_news import ReferenceNewsProvider
 from market_pulse.providers.massive_stream import MassiveMarketStreamProvider
 from market_pulse.scoring import decide_pulse
 from market_pulse.service import reset_market_pulse_engine, reset_market_pulse_runtime
@@ -244,17 +244,19 @@ def test_subscription_max_and_ttl():
     assert "BBB" in evicted
 
 
-# --- Benzinga provider mock ---
+# --- Reference news provider mock ---
 
 
 @pytest.mark.asyncio
-async def test_benzinga_fetch_dedupes_and_links_symbols():
+async def test_reference_news_fetch_dedupes_and_links_symbols():
     payload = {
         "results": [
             {
                 "id": "n1",
                 "title": "Beat estimates",
-                "published": datetime.now(timezone.utc).isoformat(),
+                "published_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "article_url": "https://example.com/n1",
+                "description": "Strong quarter",
                 "tickers": ["NVDA"],
             },
             {"id": "n1", "title": "Duplicate", "tickers": ["NVDA"]},
@@ -262,17 +264,48 @@ async def test_benzinga_fetch_dedupes_and_links_symbols():
     }
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/v2/reference/news")
+        assert request.url.params["sort"] == "published_utc"
+        assert request.url.params["order"] == "desc"
         assert "apiKey" in request.url.params
         assert request.url.params["apiKey"] == "test-key-hidden"
         return httpx.Response(200, json=payload)
 
     transport = httpx.MockTransport(handler)
     client = httpx.AsyncClient(transport=transport)
-    provider = BenzingaNewsProvider(api_key="test-key-hidden", client=client)
+    provider = ReferenceNewsProvider(api_key="test-key-hidden", client=client)
     items = await provider.fetch_news()
     await provider.close()
     assert len(items) == 1
     assert items[0].symbols == ["NVDA"]
+    assert items[0].url == "https://example.com/n1"
+    assert items[0].body == "Strong quarter"
+
+
+@pytest.mark.asyncio
+async def test_reference_news_http_errors_return_empty():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"status": "ERROR"})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    provider = ReferenceNewsProvider(api_key="test-key-hidden", client=client)
+    items = await provider.fetch_news()
+    await provider.close()
+    assert items == []
+
+
+@pytest.mark.asyncio
+async def test_reference_news_timeout_returns_empty():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out")
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    provider = ReferenceNewsProvider(api_key="test-key-hidden", client=client)
+    items = await provider.fetch_news()
+    await provider.close()
+    assert items == []
 
 
 # --- Engine integration ---

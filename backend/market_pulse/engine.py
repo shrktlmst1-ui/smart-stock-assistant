@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from config import (
@@ -23,11 +24,13 @@ from market_pulse.providers.base import (
     RawNewsItem,
     TradeTick,
 )
-from market_pulse.providers.benzinga_news import BenzingaNewsProvider
+from market_pulse.providers.reference_news import ReferenceNewsProvider
 from market_pulse.providers.massive_stream import MassiveMarketStreamProvider
 from market_pulse.scoring import alert_expires_at, compute_trade_levels, decide_pulse
 from market_pulse.state import LinkedNews, SymbolPulseState
 from market_pulse.subscription_manager import SubscriptionManager
+
+logger = logging.getLogger(__name__)
 
 
 class MarketPulseEngine:
@@ -35,7 +38,7 @@ class MarketPulseEngine:
         self,
         *,
         enabled: bool = MARKET_PULSE_ENABLED,
-        news_provider: BenzingaNewsProvider | None = None,
+        news_provider: ReferenceNewsProvider | None = None,
         stream_provider: MassiveMarketStreamProvider | None = None,
         watchlist: list[str] | None = None,
     ):
@@ -45,7 +48,7 @@ class MarketPulseEngine:
             max_symbols=MARKET_PULSE_MAX_SYMBOLS,
             ttl_seconds=MARKET_PULSE_SYMBOL_TTL_SECONDS,
         )
-        self.news = news_provider or BenzingaNewsProvider(api_key=self._api_key)
+        self.news = news_provider or ReferenceNewsProvider(api_key=self._api_key)
         self.stream = stream_provider or MassiveMarketStreamProvider(
             api_key=self._api_key,
             subscription_manager=self._subs,
@@ -129,7 +132,11 @@ class MarketPulseEngine:
     async def refresh_news(self) -> list[RawNewsItem]:
         if not self.enabled or not self.has_credentials():
             return []
-        items = await self.news.fetch_news()
+        try:
+            items = await self.news.fetch_news()
+        except Exception as exc:
+            logger.warning("Market pulse news refresh failed: %s", type(exc).__name__)
+            return []
         self.ingest_news_batch(items)
         return items
 
