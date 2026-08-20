@@ -55,6 +55,9 @@ class ApiService {
   }
 
   Future<http.Response> _get(String path, {Duration? timeout}) async {
+    if (authSession.accessToken == null) {
+      await authSession.restore();
+    }
     final uri = Uri.parse('$baseUrl$path');
     final future = _client.get(uri, headers: authSession.authHeaders());
     if (timeout != null) return future.timeout(timeout);

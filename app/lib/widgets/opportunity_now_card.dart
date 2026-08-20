@@ -86,9 +86,18 @@ class OpportunityNowHomeCard extends StatelessWidget {
               ),
               if (error != null) ...[
                 const SizedBox(height: 8),
-                Text(
-                  error!,
-                  style: const TextStyle(color: AppTheme.danger, fontSize: 12),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.error_outline, size: 16, color: AppTheme.danger),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        error!,
+                        style: const TextStyle(color: AppTheme.danger, fontSize: 12),
+                      ),
+                    ),
+                  ],
                 ),
               ],
               if (onRefresh != null) ...[

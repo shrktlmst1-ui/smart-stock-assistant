@@ -375,6 +375,19 @@ def test_market_pulse_list_empty_when_disabled(client, auth_headers):
     assert resp.json()["count"] == 0
 
 
+def test_market_pulse_list_enabled_when_feature_on(client, auth_headers, monkeypatch):
+    monkeypatch.setattr("market_pulse.service.MARKET_PULSE_ENABLED", True)
+    engine = MarketPulseEngine(enabled=True)
+    engine._api_key = "test-key"
+    reset_market_pulse_engine(engine)
+
+    resp = client.get("/market-pulse", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["enabled"] is True
+    assert isinstance(data["alerts"], list)
+
+
 def test_market_pulse_symbol_404(client, auth_headers):
     reset_market_pulse_engine(MarketPulseEngine(enabled=True))
     engine = MarketPulseEngine(enabled=True)

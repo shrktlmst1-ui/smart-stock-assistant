@@ -1,6 +1,7 @@
 /// Market Pulse models — نبض السوق الذكي.
 library;
 
+import '../utils/json_parse.dart';
 class MarketPulseHealth {
   final bool enabled;
   final String status;
@@ -24,16 +25,18 @@ class MarketPulseHealth {
 
   factory MarketPulseHealth.fromJson(Map<String, dynamic> json) {
     return MarketPulseHealth(
-      enabled: json['enabled'] as bool? ?? false,
-      status: json['status'] as String? ?? 'disabled',
-      hasApiKey: json['has_api_key'] as bool? ?? false,
-      subscribedSymbols: json['subscribed_symbols'] as int? ?? 0,
-      maxSymbols: json['max_symbols'] as int? ?? 50,
-      streamConnected: json['stream_connected'] as bool? ?? false,
-      lastNewsFetch: json['last_news_fetch'] as String?,
-      message: json['message'] as String? ?? '',
+      enabled: readJsonBool(json, ['enabled', 'is_enabled', 'market_pulse_enabled']),
+      status: readJsonString(json, ['status'], defaultValue: 'disabled'),
+      hasApiKey: readJsonBool(json, ['has_api_key', 'hasApiKey', 'has_api_key_configured']),
+      subscribedSymbols: readJsonInt(json, ['subscribed_symbols', 'subscribedSymbols']),
+      maxSymbols: readJsonInt(json, ['max_symbols', 'maxSymbols'], defaultValue: 50),
+      streamConnected: readJsonBool(json, ['stream_connected', 'streamConnected']),
+      lastNewsFetch: json['last_news_fetch'] as String? ?? json['lastNewsFetch'] as String?,
+      message: readJsonString(json, ['message']),
     );
   }
+
+  bool get isActive => enabled || (status != 'disabled' && status.isNotEmpty);
 }
 
 class CatalystInfo {
@@ -148,15 +151,15 @@ class MarketPulseAlert {
       stopLoss: (json['stop_loss'] as num?)?.toDouble() ?? 0,
       targets: (json['targets'] as List?)?.map((e) => (e as num).toDouble()).toList() ?? [],
       riskFlags: (json['risk_flags'] as List?)?.map((e) => e.toString()).toList() ?? [],
-      dataTimestamp: json['data_timestamp'] as String? ?? '',
-      isLive: json['is_live'] as bool? ?? false,
-      expiresAt: json['expires_at'] as String? ?? '',
+      dataTimestamp: readJsonString(json, ['data_timestamp', 'dataTimestamp']),
+      isLive: readJsonBool(json, ['is_live', 'isLive']),
+      expiresAt: readJsonString(json, ['expires_at', 'expiresAt']),
       reasonsAr: (json['reasons_ar'] as List?)?.map((e) => e.toString()).toList() ?? [],
       catalystScore: (json['catalyst_score'] as num?)?.toDouble() ?? 0,
       liquidityScore: (json['liquidity_score'] as num?)?.toDouble() ?? 0,
       priceConfirmationScore: (json['price_confirmation_score'] as num?)?.toDouble() ?? 0,
       riskPenalty: (json['risk_penalty'] as num?)?.toDouble() ?? 0,
-      isHalted: json['is_halted'] as bool? ?? false,
+      isHalted: readJsonBool(json, ['is_halted', 'isHalted']),
     );
   }
 
@@ -193,9 +196,9 @@ class MarketPulseListResponse {
   factory MarketPulseListResponse.fromJson(Map<String, dynamic> json) {
     final raw = json['alerts'] as List? ?? [];
     return MarketPulseListResponse(
-      enabled: json['enabled'] as bool? ?? false,
+      enabled: readJsonBool(json, ['enabled', 'is_enabled', 'market_pulse_enabled']),
       alerts: raw.map((e) => MarketPulseAlert.fromJson(e as Map<String, dynamic>)).toList(),
-      count: json['count'] as int? ?? raw.length,
+      count: readJsonInt(json, ['count'], defaultValue: raw.length),
     );
   }
 }

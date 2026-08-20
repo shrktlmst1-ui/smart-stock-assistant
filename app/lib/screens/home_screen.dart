@@ -29,12 +29,14 @@ class _HomeScreenState extends State<HomeScreen> {
   OpportunityNowResponse? _opportunityNow;
   PulseServiceState _pulseState = PulseServiceState.loading;
   bool _loading = true;
-  bool _opportunityLoading = false;
+  bool _opportunityLoading = true;
   String? _error;
   String? _opportunityError;
   Timer? _liveTimer;
 
   static const _pollSeconds = 12;
+
+  ApiService get _api => context.read<AppState>().api;
 
   @override
   void initState() {
@@ -57,47 +59,38 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _refreshLive() async {
     if (!mounted || _loading) return;
-    final api = ApiService();
     try {
       final results = await Future.wait([
-        api.fetchOpportunityNow(),
-        api.fetchMarketPulseAlerts(),
+        _api.fetchOpportunityNow(),
+        _api.fetchMarketPulseAlerts(),
+        _api.fetchMarketPulseHealth(),
       ]);
       final opp = results[0] as OpportunityNowResponse;
       final pulseList = results[1] as MarketPulseListResponse;
-      MarketPulseHealth pulseHealth = const MarketPulseHealth(
-        enabled: false,
-        status: 'disabled',
-        hasApiKey: false,
-        subscribedSymbols: 0,
-        maxSymbols: 50,
-        streamConnected: false,
-        message: '',
-      );
-      try {
-        pulseHealth = await api.fetchMarketPulseHealth();
-      } catch (_) {}
+      final pulseHealth = results[2] as MarketPulseHealth;
       if (mounted) {
         setState(() {
           _opportunityNow = opp;
           _pulseListing = pulseList;
           _pulseState = _derivePulseState(pulseList, pulseHealth);
           _opportunityError = null;
+          _opportunityLoading = false;
         });
       }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _opportunityError = e.toString();
+          _opportunityError = _friendlyError(e);
+          _opportunityLoading = false;
         });
       }
     }
   }
 
-  Future<void> _loadOpportunityNow(ApiService api) async {
-    setState(() => _opportunityLoading = true);
+  Future<void> _loadOpportunityNow() async {
+    if (mounted) setState(() => _opportunityLoading = true);
     try {
-      final opp = await api.fetchOpportunityNow();
+      final opp = await _api.fetchOpportunityNow();
       if (mounted) {
         setState(() {
           _opportunityNow = opp;
@@ -108,7 +101,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _opportunityError = e.toString();
+          _opportunityError = _friendlyError(e);
           _opportunityLoading = false;
         });
       }
@@ -119,10 +112,10 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _loading = true;
       _error = null;
+      _pulseState = PulseServiceState.loading;
     });
     try {
       final data = context.read<AppState>().stockData;
-      final api = ApiService();
       final dashboard = await data.getOpportunitiesDashboard(limit: 20);
       var pulseList = const MarketPulseListResponse(enabled: false, alerts: [], count: 0);
       var pulseHealth = const MarketPulseHealth(
@@ -134,18 +127,21 @@ class _HomeScreenState extends State<HomeScreen> {
         streamConnected: false,
         message: '',
       );
+      String? pulseError;
       try {
-        pulseList = await api.fetchMarketPulseAlerts();
-        pulseHealth = await api.fetchMarketPulseHealth();
-      } catch (_) {
-        // pulse optional — keep opportunities working
+        pulseList = await _api.fetchMarketPulseAlerts();
+        pulseHealth = await _api.fetchMarketPulseHealth();
+      } catch (e) {
+        pulseError = _friendlyError(e);
       }
-      await _loadOpportunityNow(api);
+      await _loadOpportunityNow();
       if (mounted) {
         setState(() {
           _dashboard = dashboard;
           _pulseListing = pulseList;
-          _pulseState = _derivePulseState(pulseList, pulseHealth);
+          _pulseState = pulseError != null
+              ? PulseServiceState.error
+              : _derivePulseState(pulseList, pulseHealth);
           _loading = false;
         });
       }
@@ -154,17 +150,30 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() {
           _dashboard = null;
           _loading = false;
-          _error = e.toString();
+          _error = _friendlyError(e);
+          _pulseState = PulseServiceState.error;
         });
       }
     }
+  }
+
+  String _friendlyError(Object error) {
+    final text = error.toString();
+    if (text.contains('401') || text.contains('انتهت الجلسة')) {
+      return 'انتهت الجلسة — سجّل الدخول مجددًا';
+    }
+    if (text.contains('ClientException') || text.contains('Load failed')) {
+      return 'تعذر الاتصال بالخادم — تحقق من الشبكة';
+    }
+    return ArUi.backendText(text);
   }
 
   PulseServiceState _derivePulseState(
     MarketPulseListResponse list,
     MarketPulseHealth health,
   ) {
-    if (!health.enabled) return PulseServiceState.disabled;
+    final enabled = health.isActive || list.enabled;
+    if (!enabled) return PulseServiceState.disabled;
     final valid = list.alerts.where((a) => a.price > 0 && a.score > 0).toList();
     if (valid.isEmpty) return PulseServiceState.empty;
     if (valid.any((a) => a.isLive) && health.streamConnected) {
@@ -192,6 +201,48 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       Navigator.of(context).pushNamedAndRemoveUntil('/login', (_) => false);
     }
+  }
+
+  Widget _buildHeroBanner(bool showingWatchlist) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            AppTheme.primary.withOpacity(0.2),
+            AppTheme.surface,
+          ],
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: AppTheme.primary.withOpacity(0.3),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            showingWatchlist
+                ? 'أفضل الأسهم المرشحة للمراقبة'
+                : 'أفضل الفرص المؤسسية',
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            showingWatchlist
+                ? 'أعلى درجات التحليل — ليست إشارات دخول حتى اجتياز جميع الفلاتر'
+                : 'السوق الأمريكي المباشر — يجب اجتياز 18 عاملاً',
+            style: const TextStyle(color: AppTheme.textSecondary),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildDebugSummary(OpportunitiesDashboard dashboard) {
@@ -246,11 +297,123 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildOpportunitiesSection() {
     final dashboard = _dashboard;
     final items = dashboard?.displayItems ?? [];
     final showingWatchlist = dashboard?.showingWatchlist ?? false;
+
+    if (_loading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 32),
+        child: Center(
+          child: Column(
+            children: [
+              CircularProgressIndicator(color: AppTheme.primary),
+              SizedBox(height: 16),
+              Text(
+                'جاري تحميل الفرص المباشرة...',
+                style: TextStyle(color: AppTheme.textSecondary),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_error != null) {
+      return Card(
+        color: AppTheme.danger.withOpacity(0.12),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'خطأ في الاتصال بالخادم',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.danger,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _error!,
+                style: const TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (items.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 32),
+        child: Column(
+          children: [
+            Icon(
+              Icons.insights_outlined,
+              size: 56,
+              color: AppTheme.textSecondary,
+            ),
+            SizedBox(height: 16),
+            Text(
+              'لا توجد فرص عالية الجودة حالياً',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textPrimary,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'راجع ملخص الماسح أعلاه لأعداد المراحل وأسباب الرفض.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppTheme.textSecondary),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SectionHeader(
+          title: showingWatchlist ? 'قائمة المراقبة' : 'أفضل الفرص',
+          subtitle: showingWatchlist
+              ? 'مرتبة حسب درجة التحليل (قد لا تجتاز جميع الفلاتر)'
+              : 'بيانات مباشرة من Polygon',
+        ),
+        ...List.generate(items.length, (i) {
+          final stock = items[i];
+          MarketPulseAlert? pulse;
+          for (final a in _validPulseAlerts) {
+            if (a.symbol == stock.symbol) {
+              pulse = a;
+              break;
+            }
+          }
+          return StockCard(
+            stock: stock,
+            rank: i + 1,
+            pulseScore: pulse?.score,
+            pulseDecision: pulse?.displayDecision,
+            pulseHeadline: pulse?.headline,
+            onTap: () => _openAnalysis(stock.symbol),
+          );
+        }),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showingWatchlist = _dashboard?.showingWatchlist ?? false;
 
     return Scaffold(
       appBar: AppBar(
@@ -271,169 +434,46 @@ class _HomeScreenState extends State<HomeScreen> {
       body: RefreshIndicator(
         onRefresh: _load,
         color: AppTheme.primary,
-        child: _loading
-            ? const LoadingView(message: 'جاري تحميل الفرص المباشرة...')
-            : ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          AppTheme.primary.withOpacity(0.2),
-                          AppTheme.surface,
-                        ],
-                        begin: Alignment.topRight,
-                        end: Alignment.bottomLeft,
-                      ),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: AppTheme.primary.withOpacity(0.3),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          showingWatchlist
-                              ? 'أفضل الأسهم المرشحة للمراقبة'
-                              : 'أفضل الفرص المؤسسية',
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.textPrimary,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          showingWatchlist
-                              ? 'أعلى درجات التحليل — ليست إشارات دخول حتى اجتياز جميع الفلاتر'
-                              : 'السوق الأمريكي المباشر — يجب اجتياز 18 عاملاً',
-                          style: const TextStyle(color: AppTheme.textSecondary),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  OpportunityNowHomeCard(
-                    data: _opportunityNow,
-                    loading: _opportunityLoading && _opportunityNow == null,
-                    error: _opportunityError,
-                    onRefresh: _loading ? null : _refreshLive,
-                  ),
-                  const SizedBox(height: 12),
-                  MarketPulseHomeEntryCard(
-                    state: _pulseState,
-                    alertCount: _validPulseAlerts.length,
-                    onTap: _openPulse,
-                  ),
-                  if (dashboard != null) ...[
-                    const SizedBox(height: 12),
-                    _buildDebugSummary(dashboard),
-                  ],
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: _load,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('تحديث'),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  if (_error != null) ...[
-                    Card(
-                      color: AppTheme.danger.withOpacity(0.12),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'خطأ في الاتصال بالخادم',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: AppTheme.danger,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              ArUi.backendText(_error!),
-                              style: const TextStyle(
-                                color: AppTheme.textSecondary,
-                                fontSize: 13,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                  if (items.isEmpty && _error == null)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 32),
-                      child: Column(
-                        children: [
-                          Icon(
-                            Icons.insights_outlined,
-                            size: 56,
-                            color: AppTheme.textSecondary,
-                          ),
-                          SizedBox(height: 16),
-                          Text(
-                            'لا توجد فرص عالية الجودة حالياً',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w600,
-                              color: AppTheme.textPrimary,
-                            ),
-                          ),
-                          SizedBox(height: 8),
-                          Text(
-                            'راجع ملخص الماسح أعلاه لأعداد المراحل وأسباب الرفض.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: AppTheme.textSecondary),
-                          ),
-                        ],
-                      ),
-                    )
-                  else if (items.isNotEmpty) ...[
-                    SectionHeader(
-                      title: showingWatchlist ? 'قائمة المراقبة' : 'أفضل الفرص',
-                      subtitle: showingWatchlist
-                          ? 'مرتبة حسب درجة التحليل (قد لا تجتاز جميع الفلاتر)'
-                          : 'بيانات مباشرة من Polygon',
-                    ),
-                    ...List.generate(items.length, (i) {
-                      final stock = items[i];
-                      MarketPulseAlert? pulse;
-                      for (final a in _validPulseAlerts) {
-                        if (a.symbol == stock.symbol) {
-                          pulse = a;
-                          break;
-                        }
-                      }
-                      return StockCard(
-                        stock: stock,
-                        rank: i + 1,
-                        pulseScore: pulse?.score,
-                        pulseDecision: pulse?.displayDecision,
-                        pulseHeadline: pulse?.headline,
-                        onTap: () => _openAnalysis(stock.symbol),
-                      );
-                    }),
-                  ],
-                  const SizedBox(height: 8),
-                  const Text(
-                    'للمتابعة فقط وليس توصية استثمارية',
-                    style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            _buildHeroBanner(showingWatchlist),
+            const SizedBox(height: 12),
+            OpportunityNowHomeCard(
+              data: _opportunityNow,
+              loading: _opportunityLoading && _opportunityNow == null,
+              error: _opportunityError,
+              onRefresh: _refreshLive,
+            ),
+            const SizedBox(height: 12),
+            MarketPulseHomeEntryCard(
+              state: _pulseState,
+              alertCount: _validPulseAlerts.length,
+              onTap: _openPulse,
+            ),
+            if (_dashboard != null) ...[
+              const SizedBox(height: 12),
+              _buildDebugSummary(_dashboard!),
+            ],
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh),
+                label: const Text('تحديث'),
               ),
+            ),
+            const SizedBox(height: 16),
+            _buildOpportunitiesSection(),
+            const SizedBox(height: 8),
+            const Text(
+              'للمتابعة فقط وليس توصية استثمارية',
+              style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }

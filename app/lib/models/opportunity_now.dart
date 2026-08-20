@@ -1,6 +1,7 @@
 /// فرصة الآن — sub-\$10 momentum signals from scanner cache.
 library;
 
+import '../utils/json_parse.dart';
 class OpportunityNowSignal {
   final String symbol;
   final String name;
@@ -58,10 +59,10 @@ class OpportunityNowSignal {
       target2: (json['target_2'] as num?)?.toDouble() ?? 0,
       riskLevel: json['risk_level'] as String? ?? 'مرتفع',
       reasonsAr: (json['reasons_ar'] as List?)?.map((e) => e.toString()).toList() ?? [],
-      lateEntryWarning: json['late_entry_warning'] as bool? ?? false,
-      hasNewsCatalyst: json['has_news_catalyst'] as bool? ?? false,
-      movementWithoutNews: json['movement_without_news'] as bool? ?? false,
-      dataTimestamp: json['data_timestamp'] as String? ?? '',
+      lateEntryWarning: readJsonBool(json, ['late_entry_warning', 'lateEntryWarning']),
+      hasNewsCatalyst: readJsonBool(json, ['has_news_catalyst', 'hasNewsCatalyst']),
+      movementWithoutNews: readJsonBool(json, ['movement_without_news', 'movementWithoutNews']),
+      dataTimestamp: readJsonString(json, ['data_timestamp', 'dataTimestamp']),
     );
   }
 
@@ -104,10 +105,14 @@ class OpportunityNowResponse {
         .toList();
 
     return OpportunityNowResponse(
-      marketStatus: json['market_status'] as String? ?? 'CLOSED',
-      marketOpen: json['market_open'] as bool? ?? false,
-      scanIntervalSeconds: json['scan_interval_seconds'] as int? ?? 15,
-      message: json['message'] as String? ?? '',
+      marketStatus: readJsonString(json, ['market_status', 'marketStatus'], defaultValue: 'CLOSED'),
+      marketOpen: readJsonBool(json, ['market_open', 'marketOpen']),
+      scanIntervalSeconds: readJsonInt(
+        json,
+        ['scan_interval_seconds', 'scanIntervalSeconds'],
+        defaultValue: 15,
+      ),
+      message: readJsonString(json, ['message']),
       signals: signals,
       topSignal: top,
     );
