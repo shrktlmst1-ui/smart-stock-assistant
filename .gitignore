@@ -4,26 +4,29 @@
 *.pyc
 __pycache__/
 .env
+backend/.env
 venv/
 .venv/
 backend/data/
+.pytest_cache/
+backend/.pytest_cache/
+*.apk
 
-# Flutter
+# Node
+frontend/node_modules/
+node_modules/
+
+# Flutter — build outputs (built on Render via render_build.sh; served from backend/static/web)
 app/.dart_tool/
 app/.flutter-plugins
 app/.flutter-plugins-dependencies
 app/.packages
-app/build/*
-!app/build/web/
-!app/build/web/**
+app/build/
+backend/static/web/
 app/.idea/
 app/*.iml
-
-# Android
 app/android/.gradle/
 app/android/local.properties
 app/android/**/GeneratedPluginRegistrant.java
-
-# iOS
 app/ios/Pods/
 app/ios/.symlinks/

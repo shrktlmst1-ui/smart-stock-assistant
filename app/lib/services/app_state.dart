@@ -12,6 +12,8 @@ class StockDataService {
 
   StockDataService({ApiService? api}) : _api = api ?? ApiService();
 
+  ApiService get api => _api;
+
   Future<OpportunitiesDashboard> getOpportunitiesDashboard({int limit = 20}) async {
     return _api.fetchOpportunitiesDashboard(limit: limit);
   }
@@ -50,7 +52,7 @@ class AppState extends ChangeNotifier {
     ApiService? api,
   })  : storage = storage ?? LocalStorageService(),
         api = api ?? ApiService(),
-        stockData = stockData ?? StockDataService();
+        stockData = stockData ?? StockDataService(api: api ?? ApiService());
 
   bool get isLoggedIn => _isLoggedIn;
   bool get isLoading => _isLoading;
@@ -58,7 +60,7 @@ class AppState extends ChangeNotifier {
   List<StockAlert> get alerts => List.unmodifiable(_alerts);
 
   Future<void> init() async {
-    _isLoggedIn = await storage.isLoggedIn();
+    _isLoggedIn = await api.restoreSession();
     _watchlist = await storage.getWatchlist();
     _alerts = await storage.getAlerts();
     notifyListeners();
@@ -68,13 +70,8 @@ class AppState extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
 
-    await Future.delayed(const Duration(milliseconds: 400));
-
-    final success = password == ApiService.appPassword;
-    if (success) {
-      _isLoggedIn = true;
-      await storage.setLoggedIn(true);
-    }
+    final success = await api.login(password);
+    _isLoggedIn = success;
 
     _isLoading = false;
     notifyListeners();
@@ -82,8 +79,8 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    await api.logout();
     _isLoggedIn = false;
-    await storage.setLoggedIn(false);
     notifyListeners();
   }
 

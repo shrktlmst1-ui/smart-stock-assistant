@@ -2,31 +2,62 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-import '../models/stock.dart';
+import '../models/market_pulse.dart';
 import '../models/signal_analytics.dart';
+import '../models/stock.dart';
 import '../models/system_status.dart';
 import '../models/trade_replay.dart';
+import 'auth_session.dart';
+import 'api_config.dart';
 
 /// HTTP client for Smart Stock Assistant backend.
-///
-/// Production backend: https://smart-stock-assistant.onrender.com
 class ApiService {
-  static const String baseUrl = 'https://smart-stock-assistant.onrender.com';
-  static const String baseUrl1 = 'https://smart-stock-assistant.onrender.com';
-  static const String appPassword = 'SmartStock2026!';
+  static String get baseUrl => ApiConfig.baseUrl;
 
   final http.Client _client;
+  final AuthSession authSession;
 
-  ApiService({http.Client? client}) : _client = client ?? http.Client();
+  ApiService({http.Client? client, AuthSession? authSession})
+      : _client = client ?? http.Client(),
+        authSession = authSession ?? AuthSession();
 
   Future<bool> login(String password) async {
-    final uri = Uri.parse('$baseUrl/auth/login?password=$password');
-    final response = await _client.post(uri);
+    final uri = Uri.parse('$baseUrl/auth/login');
+    final response = await _client.post(
+      uri,
+      headers: const {'Content-Type': 'application/json'},
+      body: jsonEncode({'password': password}),
+    );
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
-      return data['success'] == true;
+      final token = data['access_token'] as String?;
+      if (token != null && token.isNotEmpty) {
+        await authSession.setToken(token);
+        return true;
+      }
     }
     return false;
+  }
+
+  Future<bool> restoreSession() async {
+    await authSession.restore();
+    if (authSession.accessToken == null) return false;
+    final uri = Uri.parse('$baseUrl/auth/session');
+    final response = await _client.get(uri, headers: authSession.authHeaders());
+    if (response.statusCode == 200) return true;
+    await authSession.clear();
+    return false;
+  }
+
+  Future<void> logout() async {
+    await authSession.clear();
+  }
+
+  Future<http.Response> _get(String path, {Duration? timeout}) async {
+    final uri = Uri.parse('$baseUrl$path');
+    final future = _client.get(uri, headers: authSession.authHeaders());
+    if (timeout != null) return future.timeout(timeout);
+    return future;
   }
 
   Future<List<StockOpportunity>> getOpportunities({int limit = 5}) async {
@@ -35,8 +66,10 @@ class ApiService {
   }
 
   Future<OpportunitiesDashboard> fetchOpportunitiesDashboard({int limit = 20}) async {
-    final uri = Uri.parse('$baseUrl/stocks/opportunities?limit=$limit');
-    final response = await _client.get(uri);
+    final response = await _get('/stocks/opportunities?limit=$limit');
+    if (response.statusCode == 401) {
+      throw Exception('انتهت الجلسة — سجّل الدخول مجددًا');
+    }
     if (response.statusCode != 200) {
       throw Exception('فشل تحميل الفرص');
     }
@@ -58,8 +91,7 @@ class ApiService {
   }
 
   Future<List<SearchResult>> searchStocks(String query) async {
-    final uri = Uri.parse('$baseUrl/stocks/search?q=${Uri.encodeQueryComponent(query)}');
-    final response = await _client.get(uri);
+    final response = await _get('/stocks/search?q=${Uri.encodeQueryComponent(query)}');
     if (response.statusCode != 200) {
       throw Exception('فشل البحث');
     }
@@ -70,8 +102,7 @@ class ApiService {
   }
 
   Future<StockAnalysis> getAnalysis(String symbol) async {
-    final uri = Uri.parse('$baseUrl/stocks/${symbol.toUpperCase()}/analysis');
-    final response = await _client.get(uri);
+    final response = await _get('/stocks/${symbol.toUpperCase()}/analysis');
     if (response.statusCode == 404) {
       throw Exception('السهم غير موجود');
     }
@@ -93,8 +124,7 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> getConnectionStatus() async {
-    final uri = Uri.parse('$baseUrl/status');
-    final response = await _client.get(uri).timeout(const Duration(seconds: 12));
+    final response = await _get('/status').timeout(const Duration(seconds: 12));
     if (response.statusCode != 200) {
       throw Exception('فشل فحص الحالة (${response.statusCode})');
     }
@@ -102,8 +132,7 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> getScannerState() async {
-    final uri = Uri.parse('$baseUrl/scanner/state');
-    final response = await _client.get(uri).timeout(const Duration(seconds: 12));
+    final response = await _get('/scanner/state').timeout(const Duration(seconds: 12));
     if (response.statusCode != 200) {
       throw Exception('فشل حالة الماسح (${response.statusCode})');
     }
@@ -111,8 +140,7 @@ class ApiService {
   }
 
   Future<AnalyticsDashboard> fetchAnalyticsDashboard() async {
-    final uri = Uri.parse('$baseUrl/analytics/dashboard');
-    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    final response = await _get('/analytics/dashboard').timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('فشل لوحة التحليلات (${response.statusCode})');
     }
@@ -122,8 +150,7 @@ class ApiService {
   }
 
   Future<RankedSignalsResponse> fetchRankedSignals({int limit = 50}) async {
-    final uri = Uri.parse('$baseUrl/analytics/signals?limit=$limit');
-    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    final response = await _get('/analytics/signals?limit=$limit').timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('فشل تحميل الإشارات (${response.statusCode})');
     }
@@ -133,8 +160,7 @@ class ApiService {
   }
 
   Future<PerformanceReport> fetchPerformanceReport() async {
-    final uri = Uri.parse('$baseUrl/analytics/performance');
-    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    final response = await _get('/analytics/performance').timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('فشل تقرير الأداء (${response.statusCode})');
     }
@@ -144,11 +170,11 @@ class ApiService {
   }
 
   Future<TradeReplayListResponse> fetchTradeReplayList({int limit = 50, String? symbol}) async {
-    var uri = Uri.parse('$baseUrl/analytics/replay?limit=$limit');
+    var path = '/analytics/replay?limit=$limit';
     if (symbol != null && symbol.isNotEmpty) {
-      uri = uri.replace(queryParameters: {'limit': '$limit', 'symbol': symbol.toUpperCase()});
+      path = '/analytics/replay?limit=$limit&symbol=${symbol.toUpperCase()}';
     }
-    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    final response = await _get(path).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('فشل إعادة الصفقة (${response.statusCode})');
     }
@@ -158,8 +184,7 @@ class ApiService {
   }
 
   Future<TradeReplayDetail> fetchTradeReplayDetail(int signalId) async {
-    final uri = Uri.parse('$baseUrl/analytics/replay/$signalId');
-    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    final response = await _get('/analytics/replay/$signalId').timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('فشل تفاصيل إعادة الصفقة (${response.statusCode})');
     }
@@ -169,14 +194,29 @@ class ApiService {
   }
 
   Future<PerformanceInsights> fetchPerformanceInsights() async {
-    final uri = Uri.parse('$baseUrl/analytics/insights');
-    final response = await _client.get(uri).timeout(const Duration(seconds: 15));
+    final response = await _get('/analytics/insights').timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('فشل رؤى الأداء (${response.statusCode})');
     }
     return PerformanceInsights.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
     );
+  }
+
+  Future<MarketPulseHealth> fetchMarketPulseHealth() async {
+    final response = await _get('/market-pulse/health').timeout(const Duration(seconds: 12));
+    if (response.statusCode != 200) {
+      throw Exception('فشل حالة نبض السوق');
+    }
+    return MarketPulseHealth.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<MarketPulseListResponse> fetchMarketPulseAlerts() async {
+    final response = await _get('/market-pulse').timeout(const Duration(seconds: 12));
+    if (response.statusCode != 200) {
+      throw Exception('فشل تحميل نبض السوق');
+    }
+    return MarketPulseListResponse.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   Future<SystemStatus> fetchSystemStatus() async {
@@ -194,18 +234,5 @@ class ApiService {
       connection: connection,
       scanner: scanner,
     );
-  }
-
-  /// Placeholder for future Finnhub direct integration from the app.
-  /// Prefer routing through backend to keep API keys server-side.
-  Future<void> connectFinnhub(String apiKey) async {
-    // TODO: optional direct Finnhub calls
-    throw UnimplementedError('Use backend Finnhub integration');
-  }
-
-  /// Placeholder for future Alpha Vantage direct integration.
-  Future<void> connectAlphaVantage(String apiKey) async {
-    // TODO: optional direct Alpha Vantage calls
-    throw UnimplementedError('Use backend Alpha Vantage integration');
   }
 }

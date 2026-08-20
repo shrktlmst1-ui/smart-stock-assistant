@@ -1,4 +1,5 @@
-# Render Blueprint — Smart Stock Assistant
+# Render Blueprint — Smart Stock Assistant (single Web Service)
+# Backend API + Flutter Web UI served from the same origin.
 # https://render.com/docs/blueprint-spec
 
 services:
@@ -8,23 +9,27 @@ services:
     rootDir: backend
     buildCommand: bash render_build.sh
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: MARKET_PULSE_ENABLED
+        value: "false"
+      - key: MARKET_PULSE_FIXTURE_MODE
+        value: "false"
+      - key: JWT_ACCESS_TOKEN_MINUTES
+        value: "480"
+      - key: AUTH_RATE_LIMIT
+        value: "5"
+      - key: AUTH_RATE_WINDOW_SECONDS
+        value: "60"
       - key: CORS_ORIGINS
-        value: https://smart-stock-assistant-web.onrender.com,http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000
-
-  - type: web
-    name: smart-stock-assistant-web
-    runtime: static
-    rootDir: app
-    buildCommand: >-
-      curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.29.3-stable.tar.xz -o flutter.tar.xz
-      && tar xf flutter.tar.xz
-      && export PATH="$PWD/flutter/bin:$PATH"
-      && flutter config --enable-web
-      && flutter pub get
-      && flutter build web --release
-    staticPublishPath: build/web
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+        value: http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000
+      - key: MASSIVE_API_KEY
+        sync: false
+      - key: POLYGON_API_KEY
+        sync: false
+      - key: APP_PASSWORD_HASH
+        sync: false
+      - key: APP_JWT_SECRET
+        sync: false

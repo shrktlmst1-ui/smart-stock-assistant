@@ -8,4 +8,4 @@ flutter pub get
 flutter run
 ```
 
-Default password: `SmartStock2026!`
+Default password: set `APP_PASSWORD_HASH` on the backend (not stored in the app).

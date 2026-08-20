@@ -3,9 +3,13 @@ import 'package:provider/provider.dart';
 
 import '../l10n/ar_localization.dart';
 import '../models/stock.dart';
+import '../models/market_pulse.dart';
+import '../services/api_service.dart';
 import '../services/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/stock_card.dart';
+import '../widgets/market_pulse_card.dart';
+import 'market_pulse_screen.dart';
 import 'stock_analysis_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -17,6 +21,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   OpportunitiesDashboard? _dashboard;
+  MarketPulseListResponse? _pulseListing;
+  PulseServiceState _pulseState = PulseServiceState.loading;
   bool _loading = true;
   String? _error;
 
@@ -33,10 +39,29 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     try {
       final data = context.read<AppState>().stockData;
+      final api = ApiService();
       final dashboard = await data.getOpportunitiesDashboard(limit: 20);
+      var pulseList = const MarketPulseListResponse(enabled: false, alerts: [], count: 0);
+      var pulseHealth = const MarketPulseHealth(
+        enabled: false,
+        status: 'disabled',
+        hasApiKey: false,
+        subscribedSymbols: 0,
+        maxSymbols: 50,
+        streamConnected: false,
+        message: '',
+      );
+      try {
+        pulseList = await api.fetchMarketPulseAlerts();
+        pulseHealth = await api.fetchMarketPulseHealth();
+      } catch (_) {
+        // pulse optional — keep opportunities working
+      }
       if (mounted) {
         setState(() {
           _dashboard = dashboard;
+          _pulseListing = pulseList;
+          _pulseState = _derivePulseState(pulseList, pulseHealth);
           _loading = false;
         });
       }
@@ -49,6 +74,24 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     }
+  }
+
+  PulseServiceState _derivePulseState(
+    MarketPulseListResponse list,
+    MarketPulseHealth health,
+  ) {
+    if (!health.enabled) return PulseServiceState.disabled;
+    if (list.alerts.isEmpty) return PulseServiceState.empty;
+    if (list.alerts.any((a) => a.isLive) && health.streamConnected) {
+      return PulseServiceState.live;
+    }
+    return PulseServiceState.delayed;
+  }
+
+  void _openPulse() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const MarketPulseScreen()),
+    );
   }
 
   void _openAnalysis(String symbol) {
@@ -187,6 +230,12 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  MarketPulseHomeEntryCard(
+                    state: _pulseState,
+                    alertCount: _pulseListing?.count ?? 0,
+                    onTap: _openPulse,
+                  ),
                   if (dashboard != null) ...[
                     const SizedBox(height: 12),
                     _buildDebugSummary(dashboard),
@@ -268,9 +317,19 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     ...List.generate(items.length, (i) {
                       final stock = items[i];
+                      MarketPulseAlert? pulse;
+                      for (final a in _pulseListing?.alerts ?? const <MarketPulseAlert>[]) {
+                        if (a.symbol == stock.symbol) {
+                          pulse = a;
+                          break;
+                        }
+                      }
                       return StockCard(
                         stock: stock,
                         rank: i + 1,
+                        pulseScore: pulse?.score,
+                        pulseDecision: pulse?.displayDecision,
+                        pulseHeadline: pulse?.headline,
                         onTap: () => _openAnalysis(stock.symbol),
                       );
                     }),

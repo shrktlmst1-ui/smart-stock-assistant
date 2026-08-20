@@ -1,4 +1,6 @@
 /// Arabic UI strings and backend-value translators for display only.
+import '../models/market_pulse.dart';
+
 class ArUi {
   ArUi._();
 
@@ -315,5 +317,68 @@ class ArUi {
     );
 
     return out;
+  }
+
+  static String pulseDecision(String value) {
+    switch (value.toUpperCase()) {
+      case 'ENTER_NOW':
+        return 'ادخل الآن';
+      case 'WAIT':
+        return 'انتظر';
+      case 'AVOID':
+        return 'تجنب';
+      case 'EXPIRED':
+        return 'منتهية';
+      default:
+        return value;
+    }
+  }
+
+  static String pulseServiceState(PulseServiceState state) {
+    switch (state) {
+      case PulseServiceState.live:
+        return 'لحظي';
+      case PulseServiceState.delayed:
+        return 'متأخر';
+      case PulseServiceState.stopped:
+        return 'متوقف';
+      case PulseServiceState.stale:
+        return 'بيانات قديمة';
+      case PulseServiceState.disabled:
+        return 'الاشتراك غير مفعّل';
+      case PulseServiceState.error:
+        return 'فشل الاتصال';
+      case PulseServiceState.empty:
+        return 'لا توجد إشارات';
+      case PulseServiceState.loading:
+        return 'جاري التحميل';
+    }
+  }
+
+  static String pulseTriggerType(String value) {
+    const map = {
+      'earnings_beat': 'تفوق أرباح',
+      'fda_approval': 'موافقة FDA',
+      'contract_partnership': 'عقد/شراكة',
+      'upgrade': 'ترقية محلل',
+      'm_and_a': 'استحواذ/اندماج',
+      'offering': 'عرض عام',
+      'dilution': 'تخفيف',
+      'shelf_registration': 'تسجيل shelf',
+      'reverse_split': 'تجزئة عكسية',
+      'bankruptcy': 'إفلاس',
+      'delisting': 'شطب',
+      'sec_investigation': 'تحقيق SEC',
+      'fda_rejection': 'رفض FDA',
+      'general': 'عام',
+    };
+    return map[value] ?? value;
+  }
+
+  static String pulseRiskLevel(MarketPulseAlert alert) {
+    if (alert.riskFlags.isNotEmpty || alert.decision == 'AVOID') return 'مرتفع';
+    if (alert.score >= 80) return 'منخفض';
+    if (alert.score >= 65) return 'متوسط';
+    return 'مرتفع';
   }
 }

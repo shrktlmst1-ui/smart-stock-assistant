@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from database.signal_analytics_db import init_signal_analytics_db, insert_signal_record
+from database.trade_replay_db import init_trade_replay_db
 from services.signal_analytics_service import (
     build_explanation,
     classify_failure,
@@ -24,6 +25,7 @@ def _init_db(tmp_path, monkeypatch):
         db_file,
     )
     init_signal_analytics_db()
+    init_trade_replay_db()
     yield
 
 

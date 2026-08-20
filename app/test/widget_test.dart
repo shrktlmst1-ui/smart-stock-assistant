@@ -6,7 +6,7 @@ void main() {
     await tester.pumpWidget(const SmartStockApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('Smart Stock Assistant'), findsOneWidget);
+    expect(find.text('مساعد الأسهم الذكي'), findsOneWidget);
     expect(find.text('تسجيل الدخول'), findsOneWidget);
   });
 }

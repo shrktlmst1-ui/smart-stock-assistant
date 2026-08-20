@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/app_state.dart';
-import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 import 'main_shell.dart';
 
@@ -147,35 +146,6 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   const SizedBox(height: 24),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppTheme.surface,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppTheme.border),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.info_outline,
-                          size: 16,
-                          color: AppTheme.textSecondary,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'كلمة المرور الافتراضية: ${ApiService.appPassword}',
-                            style: const TextStyle(
-                              color: AppTheme.textSecondary,
-                              fontSize: 11,
-                            ),
-                            textDirection: TextDirection.ltr,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
                   const Text(
                     '⚠️ للمتابعة فقط — لا ينفذ أوامر شراء أو بيع',
                     style: TextStyle(

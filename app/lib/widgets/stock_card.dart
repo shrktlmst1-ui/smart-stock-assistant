@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/stock.dart';
+import '../l10n/ar_localization.dart';
 import '../theme/app_theme.dart';
 import 'metric_tile.dart';
 
@@ -8,12 +9,18 @@ class StockCard extends StatelessWidget {
   final StockOpportunity stock;
   final VoidCallback? onTap;
   final int? rank;
+  final double? pulseScore;
+  final String? pulseDecision;
+  final String? pulseHeadline;
 
   const StockCard({
     super.key,
     required this.stock,
     this.onTap,
     this.rank,
+    this.pulseScore,
+    this.pulseDecision,
+    this.pulseHeadline,
   });
 
   @override
@@ -81,8 +88,31 @@ class StockCard extends StatelessWidget {
                         RiskBadge(riskLevel: stock.riskLevel),
                         const SizedBox(width: 8),
                         ScoreBadge(score: stock.score),
+                        if (pulseScore != null) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: AppTheme.primary.withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              'Pulse ${pulseScore!.toStringAsFixed(0)}',
+                              style: const TextStyle(color: AppTheme.primary, fontSize: 11),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
+                    if (pulseDecision != null) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'نبض: ${ArUi.pulseDecision(pulseDecision!)}${pulseHeadline != null ? ' — $pulseHeadline' : ''}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                      ),
+                    ],
                   ],
                 ),
               ),

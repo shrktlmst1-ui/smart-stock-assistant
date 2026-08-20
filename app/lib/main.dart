@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import 'screens/login_screen.dart';
 import 'screens/main_shell.dart';
+import 'services/api_service.dart';
 import 'services/app_state.dart';
 import 'theme/app_theme.dart';
 
@@ -18,7 +19,10 @@ class SmartStockApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (_) => AppState()..init(),
+      create: (_) {
+        final api = ApiService();
+        return AppState(api: api, stockData: StockDataService(api: api))..init();
+      },
       child: MaterialApp(
         title: 'مساعد الأسهم الذكي',
         debugShowCheckedModeBanner: false,

@@ -9,11 +9,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from config import (
+    MARKET_PULSE_WS_MAX_CLIENTS,
     POLYGON_PLAN,
     POLL_INTERVAL_SECONDS,
     SCANNER_TICK_SECONDS,
@@ -24,7 +25,15 @@ from config import (
 from database.signal_analytics_db import init_signal_analytics_db
 from database.trade_replay_db import init_trade_replay_db
 from database.signal_logger import get_signal_history, init_db
+from database.smart_signal_logger import get_smart_signal_history, init_smart_signals_db
 from database.trading_journal import get_journal_entries, init_journal_db
+from analysis.position_sizer import calculate_position_size
+from models.smart_opportunity import (
+    RiskCalculateRequest,
+    RiskCalculateResponse,
+    SmartOpportunitiesResponse,
+)
+from services.smart_opportunities_service import get_smart_opportunities
 from models.performance import BacktestMetrics, JournalEntry, PerformanceMetrics, ProductionStatus
 from models.signal_analytics import AnalyticsDashboard, PerformanceReport, RankedSignalsResponse
 from models.trade_replay import PerformanceInsights, TradeReplayDetail, TradeReplayListResponse
@@ -47,7 +56,25 @@ from services.trade_replay_service import (
 )
 from services.market_scanner_service import market_scanner
 from services.market_session import get_us_market_session, session_explanation
+from middleware.auth_middleware import AuthMiddleware
+from services.auth_service import (
+    LoginRequest,
+    LoginResponse,
+    decode_access_token,
+    extract_bearer_token,
+    login as auth_login,
+)
 from services.stock_service import get_stock_analysis, search_stocks
+from market_pulse.models import MarketPulseAlert, MarketPulseHealth, MarketPulseListResponse
+from market_pulse.service import (
+    get_market_pulse_alert,
+    get_market_pulse_health,
+    list_market_pulse_alerts,
+    set_market_pulse_broadcast,
+    start_market_pulse,
+    stop_market_pulse,
+)
+from services.auth_service import require_ws_auth
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -57,10 +84,24 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 market_stream = MarketStream()
 ws_clients: set[WebSocket] = set()
+pulse_ws_clients: set[WebSocket] = set()
 
 _RISK_MAP = {"low": "منخفض", "medium": "متوسط", "high": "مرتفع"}
 
-WEB_ROOT = Path(__file__).resolve().parent.parent / "app" / "build" / "web"
+WEB_ROOT_CANDIDATES = (
+    Path(__file__).resolve().parent / "static" / "web",
+    Path(__file__).resolve().parent.parent / "app" / "build" / "web",
+)
+
+
+def _resolve_web_root() -> Path:
+    for candidate in WEB_ROOT_CANDIDATES:
+        if (candidate / "index.html").is_file():
+            return candidate
+    return WEB_ROOT_CANDIDATES[0]
+
+
+WEB_ROOT = _resolve_web_root()
 INDEX_HTML = WEB_ROOT / "index.html"
 
 
@@ -122,12 +163,28 @@ async def broadcast(message: dict) -> None:
         ws_clients.discard(ws)
 
 
+async def broadcast_pulse(message: dict) -> None:
+    """Fan-out processed pulse updates — never includes API keys."""
+    dead: list[WebSocket] = []
+    payload = json.dumps(message, ensure_ascii=False)
+    if "apiKey" in payload or "MASSIVE_API_KEY" in payload:
+        return
+    for ws in pulse_ws_clients:
+        try:
+            await ws.send_text(payload)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        pulse_ws_clients.discard(ws)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     init_journal_db()
     init_signal_analytics_db()
     init_trade_replay_db()
+    init_smart_signals_db()
     set_notification_broadcast(broadcast)
     if _web_build_available():
         logger.info("Serving Flutter web UI from %s", WEB_ROOT)
@@ -138,7 +195,9 @@ async def lifespan(app: FastAPI):
     logger.info("Connection: %s", status.to_dict())
 
     market_stream.set_broadcast(broadcast)
+    set_market_pulse_broadcast(broadcast_pulse)
     await market_stream.start()
+    await start_market_pulse()
 
     await broadcast({
         "type": "status",
@@ -147,6 +206,7 @@ async def lifespan(app: FastAPI):
     })
 
     yield
+    await stop_market_pulse()
     await market_stream.stop()
 
 
@@ -165,6 +225,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AuthMiddleware, web_file_resolver=_safe_web_file)
+
+
+@app.post("/auth/login", response_model=LoginResponse)
+def auth_login_endpoint(request: Request, body: LoginRequest):
+    return auth_login(request, body)
+
+
+@app.get("/auth/session")
+def auth_session(request: Request):
+    token = extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    decode_access_token(token)
+    return {"authenticated": True}
 
 
 @app.get("/")
@@ -243,6 +318,69 @@ async def scanner_state():
     if state:
         return state
     return MarketScanState()
+
+
+@app.get("/smart-opportunities", response_model=SmartOpportunitiesResponse)
+async def smart_opportunities():
+    """Top smart opportunities with entry decision — uses cached scanner data."""
+    return get_smart_opportunities()
+
+
+@app.get("/market-pulse/health", response_model=MarketPulseHealth)
+def market_pulse_health():
+    """Health for نبض السوق الذكي — no live data without API key."""
+    return get_market_pulse_health()
+
+
+@app.get("/market-pulse", response_model=MarketPulseListResponse)
+def market_pulse_list():
+    """All active market pulse alerts."""
+    return list_market_pulse_alerts()
+
+
+@app.get("/market-pulse/{symbol}", response_model=MarketPulseAlert)
+def market_pulse_symbol(symbol: str):
+    """Single-symbol market pulse alert."""
+    alert = get_market_pulse_alert(symbol)
+    if not alert:
+        raise HTTPException(status_code=404, detail="لا يوجد تنبيه نبض لهذا الرمز")
+    return alert
+
+
+@app.post("/risk/calculate", response_model=RiskCalculateResponse)
+def risk_calculate(body: RiskCalculateRequest):
+    """Position sizing calculator — shares = risk_amount / |entry - stop|."""
+    result = calculate_position_size(
+        capital=body.capital,
+        risk_pct=body.risk_pct,
+        entry_price=body.entry_price,
+        stop_loss=body.stop_loss,
+        take_profit_1=body.take_profit_1,
+        take_profit_2=body.take_profit_2,
+        direction=body.direction,
+    )
+    return RiskCalculateResponse(
+        capital=result.capital,
+        risk_pct=result.risk_pct,
+        risk_amount=result.risk_amount,
+        entry_price=result.entry_price,
+        stop_loss=result.stop_loss,
+        take_profit_1=result.take_profit_1,
+        take_profit_2=result.take_profit_2,
+        loss_per_share=result.loss_per_share,
+        shares=result.shares,
+        position_value=result.position_value,
+        expected_profit_tp1=result.expected_profit_tp1,
+        expected_profit_tp2=result.expected_profit_tp2,
+        capped_by_capital=result.capped_by_capital,
+        valid=result.valid,
+        error=result.error,
+    )
+
+
+@app.get("/smart-signals/history")
+def smart_signal_history(symbol: str | None = None, limit: int = Query(default=50, ge=1, le=200)):
+    return get_smart_signal_history(symbol, limit)
 
 
 @app.get("/stocks/opportunities", response_model=OpportunitiesResponse)
@@ -474,6 +612,8 @@ async def snapshot(symbol: str):
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
+    if not await require_ws_auth(ws):
+        return
     ws_clients.add(ws)
     try:
         status = get_connection_status()
@@ -517,6 +657,51 @@ async def websocket_endpoint(ws: WebSocket):
         pass
     finally:
         ws_clients.discard(ws)
+
+
+@app.websocket("/ws/market-pulse")
+async def market_pulse_websocket(ws: WebSocket):
+    if len(pulse_ws_clients) >= MARKET_PULSE_WS_MAX_CLIENTS:
+        await ws.close(code=1013, reason="Max pulse connections reached")
+        return
+    await ws.accept()
+    if not await require_ws_auth(ws):
+        return
+    pulse_ws_clients.add(ws)
+    try:
+        health = get_market_pulse_health()
+        await ws.send_text(json.dumps({
+            "type": "pulse_health",
+            "data": health.model_dump(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }, ensure_ascii=False))
+
+        listing = list_market_pulse_alerts()
+        await ws.send_text(json.dumps({
+            "type": "pulse_list",
+            "data": listing.model_dump(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }, ensure_ascii=False))
+
+        while True:
+            try:
+                msg = await asyncio.wait_for(ws.receive_text(), timeout=30)
+                if msg == "ping":
+                    await ws.send_text(json.dumps({
+                        "type": "heartbeat",
+                        "data": {"pong": True},
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }))
+            except asyncio.TimeoutError:
+                await ws.send_text(json.dumps({
+                    "type": "heartbeat",
+                    "data": {"keepalive": True},
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }, ensure_ascii=False))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        pulse_ws_clients.discard(ws)
 
 
 @app.get("/{full_path:path}")

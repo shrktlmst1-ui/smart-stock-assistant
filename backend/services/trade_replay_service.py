@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from database.signal_analytics_db import get_record_by_id
+from database.signal_analytics_db import TERMINAL_STATUSES, get_record_by_id
 from database.trade_replay_db import (
     add_price_tick,
     add_timeline_event,
@@ -91,7 +91,7 @@ def compute_post_trade_quality(
     elif final_result == "BREAKEVEN":
         composite *= 0.85
 
-    if composite >= 82:
+    if composite >= 81:
         return "Excellent"
     if composite >= 70:
         return "Very Good"

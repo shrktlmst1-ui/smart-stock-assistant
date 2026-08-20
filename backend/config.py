@@ -77,9 +77,8 @@ SCANNER_BOARD_SIZE: int = int(os.getenv("SCANNER_BOARD_SIZE", "20"))
 POLYGON_BASE_URL: str = "https://api.polygon.io"
 POLYGON_WS_URL: str = "wss://socket.polygon.io/stocks"
 
-# Origins that must always be allowed (production Flutter web + local dev).
+# Local dev origins (production UI is same-origin with API on Render).
 REQUIRED_CORS_ORIGINS: tuple[str, ...] = (
-    "https://smart-stock-assistant-web.onrender.com",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
@@ -124,3 +123,77 @@ RISK_PER_TRADE_PCT: float = float(os.getenv("RISK_PER_TRADE_PCT", "1.0"))
 NOTIFICATION_MIN_CONFIDENCE: float = float(os.getenv("NOTIFICATION_MIN_CONFIDENCE", "80"))
 MIN_CONFIDENCE_PRODUCTION: float = float(os.getenv("MIN_CONFIDENCE_PRODUCTION", "85"))
 MIN_RISK_REWARD: float = float(os.getenv("MIN_RISK_REWARD", "2.5"))
+
+# Smart Opportunity Scanner (الفرص الذكية)
+SMART_SCANNER_TOP_N: int = int(os.getenv("SMART_SCANNER_TOP_N", "5"))
+SMART_SCANNER_MIN_RVOL: float = float(os.getenv("SMART_SCANNER_MIN_RVOL", "1.5"))
+SMART_SCANNER_MIN_AI_SCORE: float = float(os.getenv("SMART_SCANNER_MIN_AI_SCORE", "65"))
+SMART_SCANNER_MAX_SPREAD_PCT: float = float(os.getenv("SMART_SCANNER_MAX_SPREAD_PCT", "0.5"))
+SMART_SCANNER_MIN_DAY_VOLUME: int = int(os.getenv("SMART_SCANNER_MIN_DAY_VOLUME", "500000"))
+SMART_SCANNER_DEEP_POOL: int = int(os.getenv("SMART_SCANNER_DEEP_POOL", "40"))
+
+# Entry decision thresholds (قرار الدخول)
+ENTRY_MIN_AI_SCORE: float = float(os.getenv("ENTRY_MIN_AI_SCORE", "80"))
+ENTRY_MIN_RRR: float = float(os.getenv("ENTRY_MIN_RRR", "2.0"))
+ENTRY_MAX_SPREAD_PCT: float = float(os.getenv("ENTRY_MAX_SPREAD_PCT", "0.5"))
+ENTRY_MIN_RVOL: float = float(os.getenv("ENTRY_MIN_RVOL", "1.5"))
+ENTRY_MIN_DAY_VOLUME: int = int(os.getenv("ENTRY_MIN_DAY_VOLUME", "500000"))
+ENTRY_SIGNAL_EXPIRY_CANDLES: int = int(os.getenv("ENTRY_SIGNAL_EXPIRY_CANDLES", "3"))
+ENTRY_TIMEFRAME_MINUTES: int = int(os.getenv("ENTRY_TIMEFRAME_MINUTES", "15"))
+ENTRY_DATA_MAX_AGE_SECONDS: int = int(os.getenv("ENTRY_DATA_MAX_AGE_SECONDS", "120"))
+
+# Risk calculator defaults (حاسبة المخاطرة)
+DEFAULT_ACCOUNT_SIZE: float = float(os.getenv("DEFAULT_ACCOUNT_SIZE", "100000"))
+DEFAULT_RISK_PCT: float = float(os.getenv("DEFAULT_RISK_PCT", "0.5"))
+
+# Market Pulse — نبض السوق الذكي (Phase 1, disabled by default)
+MARKET_PULSE_ENABLED: bool = os.getenv("MARKET_PULSE_ENABLED", "false").lower() == "true"
+MASSIVE_WS_URL: str = os.getenv("MASSIVE_WS_URL", "wss://socket.massive.com/stocks")
+BENZINGA_NEWS_URL: str = os.getenv(
+    "BENZINGA_NEWS_URL", "https://api.massive.com/benzinga/v2/news"
+)
+MARKET_PULSE_MAX_SYMBOLS: int = int(os.getenv("MARKET_PULSE_MAX_SYMBOLS", "50"))
+MARKET_PULSE_SYMBOL_TTL_SECONDS: int = int(os.getenv("MARKET_PULSE_SYMBOL_TTL_SECONDS", "3600"))
+MARKET_PULSE_ENTER_MIN_SCORE: float = float(os.getenv("MARKET_PULSE_ENTER_MIN_SCORE", "85"))
+MARKET_PULSE_WAIT_MIN_SCORE: float = float(os.getenv("MARKET_PULSE_WAIT_MIN_SCORE", "65"))
+MARKET_PULSE_MAX_SPREAD_BPS: float = float(os.getenv("MARKET_PULSE_MAX_SPREAD_BPS", "50"))
+MARKET_PULSE_DATA_MAX_AGE_SECONDS: int = int(os.getenv("MARKET_PULSE_DATA_MAX_AGE_SECONDS", "120"))
+MARKET_PULSE_ALERT_TTL_SECONDS: int = int(os.getenv("MARKET_PULSE_ALERT_TTL_SECONDS", "900"))
+MARKET_PULSE_WS_BACKOFF_BASE: float = float(os.getenv("MARKET_PULSE_WS_BACKOFF_BASE_SECONDS", "2"))
+MARKET_PULSE_WS_BACKOFF_MAX: float = float(os.getenv("MARKET_PULSE_WS_BACKOFF_MAX_SECONDS", "60"))
+MARKET_PULSE_NEWS_POLL_SECONDS: int = int(os.getenv("MARKET_PULSE_NEWS_POLL_SECONDS", "60"))
+MARKET_PULSE_BROADCAST_INTERVAL_SECONDS: float = float(
+    os.getenv("MARKET_PULSE_BROADCAST_INTERVAL_SECONDS", "5")
+)
+MARKET_PULSE_WS_MAX_CLIENTS: int = int(os.getenv("MARKET_PULSE_WS_MAX_CLIENTS", "50"))
+MARKET_PULSE_FIXTURE_MODE: bool = os.getenv("MARKET_PULSE_FIXTURE_MODE", "false").lower() == "true"
+
+# App authentication (JWT — secrets from env only)
+APP_PASSWORD_HASH: str = os.getenv("APP_PASSWORD_HASH", "").strip()
+APP_JWT_SECRET: str = os.getenv("APP_JWT_SECRET", "").strip()
+JWT_ACCESS_TOKEN_MINUTES: int = int(os.getenv("JWT_ACCESS_TOKEN_MINUTES", "480"))
+AUTH_RATE_LIMIT: int = int(os.getenv("AUTH_RATE_LIMIT", "5"))
+AUTH_RATE_WINDOW_SECONDS: int = int(os.getenv("AUTH_RATE_WINDOW_SECONDS", "60"))
+
+
+def is_pytest_running() -> bool:
+    import sys
+    return "pytest" in sys.modules or bool(os.getenv("PYTEST_CURRENT_TEST"))
+
+
+def is_production_release() -> bool:
+    env = os.getenv("ENVIRONMENT", os.getenv("ENV", "")).lower()
+    return (
+        os.getenv("RENDER", "").lower() == "true"
+        or env in ("production", "release", "prod")
+        or os.getenv("FLUTTER_RELEASE", "").lower() == "true"
+    )
+
+
+def is_market_pulse_fixture_allowed() -> bool:
+    """Fixture data is dev/test only — blocked in production/release."""
+    if not MARKET_PULSE_FIXTURE_MODE:
+        return False
+    if is_production_release():
+        return False
+    return True
