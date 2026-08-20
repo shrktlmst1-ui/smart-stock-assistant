@@ -1,14 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../l10n/ar_localization.dart';
 import '../models/stock.dart';
 import '../models/market_pulse.dart';
+import '../models/opportunity_now.dart';
 import '../services/api_service.dart';
 import '../services/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/stock_card.dart';
 import '../widgets/market_pulse_card.dart';
+import '../widgets/opportunity_now_card.dart';
 import 'market_pulse_screen.dart';
 import 'stock_analysis_screen.dart';
 
@@ -22,14 +26,93 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   OpportunitiesDashboard? _dashboard;
   MarketPulseListResponse? _pulseListing;
+  OpportunityNowResponse? _opportunityNow;
   PulseServiceState _pulseState = PulseServiceState.loading;
   bool _loading = true;
+  bool _opportunityLoading = false;
   String? _error;
+  String? _opportunityError;
+  Timer? _liveTimer;
+
+  static const _pollSeconds = 12;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _liveTimer = Timer.periodic(const Duration(seconds: _pollSeconds), (_) => _refreshLive());
+  }
+
+  @override
+  void dispose() {
+    _liveTimer?.cancel();
+    super.dispose();
+  }
+
+  List<MarketPulseAlert> get _validPulseAlerts {
+    return (_pulseListing?.alerts ?? const <MarketPulseAlert>[])
+        .where((a) => a.price > 0 && a.score > 0 && a.decision != 'EXPIRED')
+        .toList();
+  }
+
+  Future<void> _refreshLive() async {
+    if (!mounted || _loading) return;
+    final api = ApiService();
+    try {
+      final results = await Future.wait([
+        api.fetchOpportunityNow(),
+        api.fetchMarketPulseAlerts(),
+      ]);
+      final opp = results[0] as OpportunityNowResponse;
+      final pulseList = results[1] as MarketPulseListResponse;
+      MarketPulseHealth pulseHealth = const MarketPulseHealth(
+        enabled: false,
+        status: 'disabled',
+        hasApiKey: false,
+        subscribedSymbols: 0,
+        maxSymbols: 50,
+        streamConnected: false,
+        message: '',
+      );
+      try {
+        pulseHealth = await api.fetchMarketPulseHealth();
+      } catch (_) {}
+      if (mounted) {
+        setState(() {
+          _opportunityNow = opp;
+          _pulseListing = pulseList;
+          _pulseState = _derivePulseState(pulseList, pulseHealth);
+          _opportunityError = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _opportunityError = e.toString();
+        });
+      }
+    }
+  }
+
+  Future<void> _loadOpportunityNow(ApiService api) async {
+    setState(() => _opportunityLoading = true);
+    try {
+      final opp = await api.fetchOpportunityNow();
+      if (mounted) {
+        setState(() {
+          _opportunityNow = opp;
+          _opportunityError = null;
+          _opportunityLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _opportunityError = e.toString();
+          _opportunityLoading = false;
+        });
+      }
+    }
   }
 
   Future<void> _load() async {
@@ -57,6 +140,7 @@ class _HomeScreenState extends State<HomeScreen> {
       } catch (_) {
         // pulse optional — keep opportunities working
       }
+      await _loadOpportunityNow(api);
       if (mounted) {
         setState(() {
           _dashboard = dashboard;
@@ -81,8 +165,9 @@ class _HomeScreenState extends State<HomeScreen> {
     MarketPulseHealth health,
   ) {
     if (!health.enabled) return PulseServiceState.disabled;
-    if (list.alerts.isEmpty) return PulseServiceState.empty;
-    if (list.alerts.any((a) => a.isLive) && health.streamConnected) {
+    final valid = list.alerts.where((a) => a.price > 0 && a.score > 0).toList();
+    if (valid.isEmpty) return PulseServiceState.empty;
+    if (valid.any((a) => a.isLive) && health.streamConnected) {
       return PulseServiceState.live;
     }
     return PulseServiceState.delayed;
@@ -231,9 +316,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
+                  OpportunityNowHomeCard(
+                    data: _opportunityNow,
+                    loading: _opportunityLoading && _opportunityNow == null,
+                    error: _opportunityError,
+                    onRefresh: _loading ? null : _refreshLive,
+                  ),
+                  const SizedBox(height: 12),
                   MarketPulseHomeEntryCard(
                     state: _pulseState,
-                    alertCount: _pulseListing?.count ?? 0,
+                    alertCount: _validPulseAlerts.length,
                     onTap: _openPulse,
                   ),
                   if (dashboard != null) ...[
@@ -318,7 +410,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ...List.generate(items.length, (i) {
                       final stock = items[i];
                       MarketPulseAlert? pulse;
-                      for (final a in _pulseListing?.alerts ?? const <MarketPulseAlert>[]) {
+                      for (final a in _validPulseAlerts) {
                         if (a.symbol == stock.symbol) {
                           pulse = a;
                           break;

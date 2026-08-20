@@ -146,7 +146,9 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with WidgetsBindi
       case PulseServiceState.live:
       case PulseServiceState.delayed:
       case PulseServiceState.stopped:
-        final alerts = _service.listing?.alerts ?? [];
+        final alerts = (_service.listing?.alerts ?? [])
+            .where((a) => a.price > 0 && a.score > 0 && a.decision != 'EXPIRED')
+            .toList();
         if (alerts.isEmpty) {
           return _messageCard(
             icon: Icons.notifications_off_outlined,
@@ -203,6 +205,12 @@ class _MarketPulseScreenState extends State<MarketPulseScreen> with WidgetsBindi
           padding: const EdgeInsets.all(16),
           children: [
             _buildStatusBar(),
+            const SizedBox(height: 8),
+            const Text(
+              'الأسعار لحظية — الأخبار تُحدّث كل ساعة',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+            ),
             const SizedBox(height: 12),
             _buildBody(),
             const SizedBox(height: 16),

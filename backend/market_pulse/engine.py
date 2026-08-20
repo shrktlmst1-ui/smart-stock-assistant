@@ -27,6 +27,7 @@ from market_pulse.providers.base import (
 from market_pulse.providers.reference_news import ReferenceNewsProvider
 from market_pulse.providers.massive_stream import MassiveMarketStreamProvider
 from market_pulse.scoring import alert_expires_at, compute_trade_levels, decide_pulse
+from market_pulse.scanner_bridge import enrich_metrics_from_scanner
 from market_pulse.state import LinkedNews, SymbolPulseState
 from market_pulse.subscription_manager import SubscriptionManager
 
@@ -158,6 +159,7 @@ class MarketPulseEngine:
             return None
         now = now or datetime.now(timezone.utc)
         metrics = compute_metrics(state, now=now)
+        metrics = enrich_metrics_from_scanner(sym, state, metrics)
         breakdown = decide_pulse(state, metrics, now=now)
         linked = state.linked_news
         entry, stop, targets = compute_trade_levels(metrics.price or state.last_price)
@@ -214,8 +216,13 @@ class MarketPulseEngine:
         alerts: list[MarketPulseAlert] = []
         for sym in sorted(self._states.keys()):
             alert = self.build_alert(sym)
-            if alert:
-                alerts.append(alert)
+            if not alert:
+                continue
+            if alert.price <= 0 or alert.score <= 0:
+                continue
+            if alert.decision == "EXPIRED":
+                continue
+            alerts.append(alert)
         alerts.sort(key=lambda a: a.score, reverse=True)
         return alerts
 

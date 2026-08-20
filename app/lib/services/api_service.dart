@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/market_pulse.dart';
+import '../models/opportunity_now.dart';
 import '../models/signal_analytics.dart';
 import '../models/stock.dart';
 import '../models/system_status.dart';
@@ -217,6 +218,19 @@ class ApiService {
       throw Exception('فشل تحميل نبض السوق');
     }
     return MarketPulseListResponse.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<OpportunityNowResponse> fetchOpportunityNow() async {
+    final response = await _get('/stocks/opportunity-now').timeout(const Duration(seconds: 12));
+    if (response.statusCode == 401) {
+      throw Exception('انتهت الجلسة — سجّل الدخول مجددًا');
+    }
+    if (response.statusCode != 200) {
+      throw Exception('فشل تحميل فرصة الآن');
+    }
+    return OpportunityNowResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
   }
 
   Future<SystemStatus> fetchSystemStatus() async {

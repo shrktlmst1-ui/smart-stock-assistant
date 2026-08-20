@@ -26,6 +26,9 @@ class MarketPulseAlertCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (alert.price <= 0 || alert.score <= 0) {
+      return const SizedBox.shrink();
+    }
     final decision = alert.displayDecision;
     final color = pulseDecisionColor(decision);
     final changeHint = alert.price > alert.vwap ? '+' : '';

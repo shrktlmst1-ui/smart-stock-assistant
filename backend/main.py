@@ -38,6 +38,8 @@ from models.smart_opportunity import (
     SmartOpportunitiesResponse,
 )
 from services.smart_opportunities_service import get_smart_opportunities
+from services.opportunity_now_service import get_opportunity_now
+from models.opportunity_now import OpportunityNowResponse
 from models.performance import BacktestMetrics, JournalEntry, PerformanceMetrics, ProductionStatus
 from models.signal_analytics import AnalyticsDashboard, PerformanceReport, RankedSignalsResponse
 from models.trade_replay import PerformanceInsights, TradeReplayDetail, TradeReplayListResponse
@@ -398,6 +400,12 @@ def risk_calculate(body: RiskCalculateRequest):
 @app.get("/smart-signals/history")
 def smart_signal_history(symbol: str | None = None, limit: int = Query(default=50, ge=1, le=200)):
     return get_smart_signal_history(symbol, limit)
+
+
+@app.get("/stocks/opportunity-now", response_model=OpportunityNowResponse)
+def opportunity_now():
+    """فرصة الآن — sub-$10 momentum from scanner cache (no per-symbol API)."""
+    return get_opportunity_now()
 
 
 @app.get("/stocks/opportunities", response_model=OpportunitiesResponse)
