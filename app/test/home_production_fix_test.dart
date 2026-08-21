@@ -78,10 +78,15 @@ void main() {
           home: Scaffold(
             body: OpportunityNowHomeCard(
               data: OpportunityNowResponse(
+                status: 'NONE',
+                statusAr: 'لا توجد فرصة مكتملة الآن',
                 marketStatus: 'REGULAR',
                 marketOpen: true,
                 scanIntervalSeconds: 15,
                 message: '',
+                liveSource: 'rest',
+                wsConnected: false,
+                monitorPoolSize: 0,
                 signals: [],
                 topSignal: null,
               ),
@@ -109,7 +114,7 @@ void main() {
       );
 
       expect(find.text('فرصة الآن'), findsOneWidget);
-      expect(find.text('لا توجد فرصة مكتملة الآن'), findsOneWidget);
+      expect(find.text('تعذر الاتصال — حاول التحديث'), findsOneWidget);
       expect(find.text('تعذر الاتصال بالخادم'), findsOneWidget);
     });
   });

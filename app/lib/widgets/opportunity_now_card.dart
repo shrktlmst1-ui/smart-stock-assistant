@@ -5,15 +5,20 @@ import '../theme/app_theme.dart';
 
 Color opportunityStatusColor(String status) {
   switch (status) {
+    case 'NOW':
     case 'فرصة الآن':
       return AppTheme.success;
+    case 'READY':
     case 'استعد':
       return const Color(0xFFD29922);
+    case 'WATCH':
     case 'مراقبة':
-      return AppTheme.primary;
-    case 'تجنب':
-    default:
+      return AppTheme.textSecondary;
+    case 'CANCELLED':
+    case 'أُلغيت':
       return AppTheme.danger;
+    default:
+      return AppTheme.textSecondary;
   }
 }
 
@@ -52,8 +57,10 @@ class OpportunityNowHomeCard extends StatelessWidget {
     final top = resp?.displayTop;
     final marketOpen = resp?.marketOpen ?? false;
     final message = resp?.message ?? '';
+    final isConnectionError = error != null;
+    final isNone = resp?.hasNoOpportunity ?? true;
 
-    if (top == null || !top.isOpportunityNow) {
+    if (top == null || isNone) {
       return Card(
         color: AppTheme.surface,
         child: Padding(
@@ -79,12 +86,17 @@ class OpportunityNowHomeCard extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                !marketOpen && message.isNotEmpty
-                    ? message
-                    : 'لا توجد فرصة مكتملة الآن',
-                style: const TextStyle(color: AppTheme.textSecondary, fontSize: 14),
+                isConnectionError
+                    ? 'تعذر الاتصال — حاول التحديث'
+                    : (!marketOpen && message.isNotEmpty
+                        ? message
+                        : 'لا توجد فرصة مكتملة الآن'),
+                style: TextStyle(
+                  color: isConnectionError ? AppTheme.danger : AppTheme.textSecondary,
+                  fontSize: 14,
+                ),
               ),
-              if (error != null) ...[
+              if (isConnectionError && error != null) ...[
                 const SizedBox(height: 8),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -119,6 +131,7 @@ class OpportunityNowHomeCard extends StatelessWidget {
 
     final color = opportunityStatusColor(top.status);
     final changePrefix = top.changePercent >= 0 ? '+' : '';
+    final countdown = _countdownSeconds(top.expiresAt);
 
     return Card(
       color: AppTheme.surface,
@@ -142,12 +155,12 @@ class OpportunityNowHomeCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'فرصة الآن',
+                      Text(
+                        top.statusAr.isNotEmpty ? top.statusAr : 'فرصة الآن',
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
-                          color: AppTheme.textPrimary,
+                          color: color,
                         ),
                       ),
                       Text(
@@ -181,9 +194,17 @@ class OpportunityNowHomeCard extends StatelessWidget {
               spacing: 8,
               runSpacing: 6,
               children: [
-                _StatusChip(label: top.status, color: color),
+                _StatusChip(label: top.statusAr, color: color),
                 _StatusChip(label: '${top.score.toStringAsFixed(0)}/100', color: AppTheme.primary),
-                _StatusChip(label: 'مخاطرة: ${top.riskLevel}', color: AppTheme.textSecondary),
+                _StatusChip(
+                  label: '${top.confirmedFactors}/${top.totalFactors} عامل',
+                  color: AppTheme.primary,
+                ),
+                if (top.riskRewardRatio > 0)
+                  _StatusChip(
+                    label: 'R:R ${top.riskRewardRatio.toStringAsFixed(1)}',
+                    color: AppTheme.success,
+                  ),
               ],
             ),
             const SizedBox(height: 10),
@@ -191,22 +212,45 @@ class OpportunityNowHomeCard extends StatelessWidget {
               spacing: 12,
               runSpacing: 4,
               children: [
-                _Meta('دخول', top.entryZone.toStringAsFixed(2)),
+                _Meta('دخول', _entryLabel(top)),
                 _Meta('وقف', top.stopLoss.toStringAsFixed(2)),
                 _Meta('هدف 1', top.target1.toStringAsFixed(2)),
                 _Meta('هدف 2', top.target2.toStringAsFixed(2)),
               ],
             ),
+            if (countdown != null && top.isOpportunityNow) ...[
+              const SizedBox(height: 8),
+              Text(
+                'ينتهي خلال ${countdown}s',
+                style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+            ],
             const SizedBox(height: 8),
             Text(
-              'ظهرت: ${_shortTime(top.appearedAt)} — تنتهي: ${_shortTime(top.expiresAt)}',
+              'تأكيدات: ${top.consecutiveConfirmations} — ${_shortTime(top.appearedAt)}',
               style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
             ),
             if (top.reasonsAr.isNotEmpty) ...[
               const SizedBox(height: 8),
+              const Text(
+                'لماذا الآن؟',
+                style: TextStyle(
+                  color: AppTheme.textPrimary,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(height: 4),
               Text(
-                top.reasonsAr.take(4).join(' • '),
+                top.reasonsAr.take(3).join(' • '),
                 style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+              ),
+            ],
+            if (top.cancellationReasonsAr.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                top.cancellationReasonsAr.join(' • '),
+                style: const TextStyle(color: AppTheme.danger, fontSize: 12),
               ),
             ],
             if (top.lateEntryWarning) ...[
@@ -223,17 +267,45 @@ class OpportunityNowHomeCard extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 4),
-            const Row(
+            Row(
               children: [
-                Icon(Icons.circle, size: 8, color: AppTheme.success),
-                SizedBox(width: 6),
-                Text('أسعار لحظية', style: TextStyle(color: AppTheme.success, fontSize: 11)),
+                Icon(
+                  Icons.circle,
+                  size: 8,
+                  color: resp?.wsConnected == true ? AppTheme.success : AppTheme.textSecondary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  resp?.wsConnected == true ? 'مراقبة لحظية (WS)' : 'مراقبة عبر REST',
+                  style: TextStyle(
+                    color: resp?.wsConnected == true ? AppTheme.success : AppTheme.textSecondary,
+                    fontSize: 11,
+                  ),
+                ),
               ],
             ),
           ],
         ),
       ),
     );
+  }
+
+  String _entryLabel(OpportunityNowSignal top) {
+    if (top.entryZoneLow > 0 && top.entryZoneHigh > 0) {
+      return '${top.entryZoneLow.toStringAsFixed(2)}–${top.entryZoneHigh.toStringAsFixed(2)}';
+    }
+    return top.entryZone.toStringAsFixed(2);
+  }
+
+  int? _countdownSeconds(String expiresAt) {
+    if (expiresAt.isEmpty) return null;
+    try {
+      final exp = DateTime.parse(expiresAt);
+      final diff = exp.difference(DateTime.now().toUtc()).inSeconds;
+      return diff > 0 ? diff : 0;
+    } catch (_) {
+      return null;
+    }
   }
 
   String _shortTime(String iso) {

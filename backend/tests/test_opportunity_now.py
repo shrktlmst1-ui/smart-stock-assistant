@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from services import opportunity_now_scoring as scoring
 from services import opportunity_now_service as svc
 
 
@@ -74,87 +75,87 @@ def _strong_snap(**kwargs):
 
 @pytest.fixture(autouse=True)
 def _reset_cache():
-    svc.reset_signal_cache()
+    scoring.reset_signal_cache()
     yield
-    svc.reset_signal_cache()
+    scoring.reset_signal_cache()
 
 
 def test_excludes_zero_price():
     snap = _snap(price=0.0, symbol="ZERO")
-    assert svc._snapshot_to_signal(snap, market_open=True) is None
+    assert scoring._snapshot_to_signal(snap, market_open=True) is None
 
 
 def test_excludes_price_above_ten():
     snap = _snap(price=12.5, symbol="HIGH")
-    assert svc._snapshot_to_signal(snap, market_open=True) is None
+    assert scoring._snapshot_to_signal(snap, market_open=True) is None
 
 
 def test_rejects_stale_data():
     old = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
     snap = _snap(last_updated=old)
-    sig = svc._snapshot_to_signal(snap, market_open=True)
+    sig = scoring._snapshot_to_signal(snap, market_open=True)
     assert sig is not None
-    assert sig.status == "تجنب"
+    assert sig.status == "CANCELLED"
     assert any("قديمة" in r for r in sig.reasons_ar)
 
 
 def test_rejects_high_spread():
     snap = _snap()
-    with patch.object(svc, "_spread_pct", return_value=1.2):
-        sig = svc._snapshot_to_signal(snap, market_open=True)
+    with patch.object(scoring, "_spread_pct", return_value=1.2):
+        sig = scoring._snapshot_to_signal(snap, market_open=True)
     assert sig is not None
-    assert sig.status == "تجنب"
+    assert sig.status == "CANCELLED"
 
 
 def test_opportunity_now_when_score_high_and_market_open():
     snap = _strong_snap()
-    sig = svc._snapshot_to_signal(snap, market_open=True)
+    sig = scoring._snapshot_to_signal(snap, market_open=True)
     assert sig is not None
     assert sig.score >= 80
-    assert sig.status == "فرصة الآن"
+    assert sig.status == "NOW"
 
 
 def test_status_transitions_watch_ready_opportunity():
     watch = _snap(price=6.0, change_percent=1.2, volume=280_000)
     watch.volume_engine.relative_volume = 1.25  # type: ignore[union-attr]
-    sig_watch = svc._snapshot_to_signal(watch, market_open=True)
+    sig_watch = scoring._snapshot_to_signal(watch, market_open=True)
     assert sig_watch is not None
-    assert sig_watch.status in ("مراقبة", "تجنب", "استعد")
+    assert sig_watch.status in ("WATCH", "CANCELLED", "READY")
 
     ready = _snap(price=5.5, change_percent=4.0, volume=600_000)
     ready.volume_engine.relative_volume = 2.2  # type: ignore[union-attr]
     ready.smc.liquidity_sweep = True  # type: ignore[union-attr]
-    sig_ready = svc._snapshot_to_signal(ready, market_open=True)
+    sig_ready = scoring._snapshot_to_signal(ready, market_open=True)
     assert sig_ready is not None
-    assert sig_ready.status in ("استعد", "فرصة الآن", "مراقبة")
+    assert sig_ready.status in ("READY", "NOW", "WATCH")
 
     top = _strong_snap()
-    sig_top = svc._snapshot_to_signal(top, market_open=True)
+    sig_top = scoring._snapshot_to_signal(top, market_open=True)
     assert sig_top is not None
-    assert sig_top.status == "فرصة الآن"
+    assert sig_top.status == "NOW"
 
 
 def test_ready_state_mid_score():
     snap = _snap(price=6.0, change_percent=1.5, volume=300_000)
     snap.volume_engine.relative_volume = 1.3  # type: ignore[union-attr]
-    sig = svc._snapshot_to_signal(snap, market_open=True)
+    sig = scoring._snapshot_to_signal(snap, market_open=True)
     assert sig is not None
-    assert sig.status in ("استعد", "مراقبة", "تجنب", "فرصة الآن")
+    assert sig.status in ("READY", "WATCH", "CANCELLED", "NOW")
 
 
 def test_market_closed_downgrades_opportunity_now():
     snap = _snap(price=3.5, change_percent=6.0)
-    sig = svc._snapshot_to_signal(snap, market_open=False)
+    sig = scoring._snapshot_to_signal(snap, market_open=False)
     assert sig is not None
-    assert sig.status != "فرصة الآن"
+    assert sig.status != "NOW"
 
 
 def test_signal_expires():
     sym = "EXPIRE"
-    old = (datetime.now(timezone.utc) - timedelta(seconds=svc.SIGNAL_TTL_SECONDS + 10)).isoformat()
-    svc._signal_created[sym] = old
+    old = (datetime.now(timezone.utc) - timedelta(seconds=scoring.SIGNAL_TTL_SECONDS + 10)).isoformat()
+    scoring._signal_created[sym] = old
     snap = _snap(symbol=sym, last_updated=datetime.now(timezone.utc).isoformat())
-    sig = svc._snapshot_to_signal(snap, market_open=True)
+    sig = scoring._snapshot_to_signal(snap, market_open=True)
     assert sig is not None
 
 
@@ -169,7 +170,7 @@ def test_movement_without_news_detected():
     snap = _snap(news=[], news_intelligence=SimpleNamespace(overall_sentiment="neutral", confidence_adjustment=0, summary=""))
     snap.volume_engine.relative_volume = 3.0  # type: ignore[union-attr]
     snap.change_percent = 5.0
-    sig = svc._snapshot_to_signal(snap, market_open=True)
+    sig = scoring._snapshot_to_signal(snap, market_open=True)
     assert sig is not None
     assert sig.movement_without_news or sig.has_news_catalyst is False
 
@@ -179,6 +180,6 @@ def test_with_news_catalyst():
         news=[SimpleNamespace(title="Beat")],
         news_intelligence=SimpleNamespace(overall_sentiment="bullish", confidence_adjustment=5, summary=""),
     )
-    sig = svc._snapshot_to_signal(snap, market_open=True)
+    sig = scoring._snapshot_to_signal(snap, market_open=True)
     assert sig is not None
     assert sig.has_news_catalyst
