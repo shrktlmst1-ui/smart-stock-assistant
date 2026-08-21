@@ -183,6 +183,14 @@ class MarketScannerService:
         return symbols
 
     @staticmethod
+    def _snapshot_universe_overlap(snapshot_raw: dict[str, dict]) -> int:
+        """Unique snapshot symbols present in the reference universe."""
+        universe_syms = universe_manager.symbol_set
+        if not universe_syms or not snapshot_raw:
+            return 0
+        return len({sym.upper() for sym in snapshot_raw if sym.upper() in universe_syms})
+
+    @staticmethod
     def _build_stage_counts(
         session: MarketSession,
         symbols_scanned: int,
@@ -197,7 +205,11 @@ class MarketScannerService:
             (s.trade_decision.professional_signal or s.trade_decision.recommendation or "WAIT").upper()
             for s in analyzed
         ]
-        coverage = round(symbols_scanned / universe_symbols * 100, 1) if universe_symbols > 0 else 0.0
+        coverage = (
+            min(100.0, round(symbols_scanned / universe_symbols * 100, 1))
+            if universe_symbols > 0
+            else 0.0
+        )
         return ScannerStageCounts(
             market_status=session,
             symbols_scanned=symbols_scanned,
@@ -467,9 +479,10 @@ class MarketScannerService:
                 watchlist_ranked = self._top_watchlist_by_score(analyzed, WATCHLIST_DISPLAY_N)
 
         filter_failures = self._aggregate_filter_failures(analyzed)
+        overlap = self._snapshot_universe_overlap(self._snapshot_raw)
         debug = self._build_stage_counts(
             self.market_session,
-            self.universe_size,
+            overlap,
             ustats.get("total", 0),
             len(self._scored_metrics),
             len(self._rank_pool),
@@ -479,7 +492,7 @@ class MarketScannerService:
         )
         no_signal_reason = self._build_no_signal_reason(
             self.market_session,
-            self.universe_size,
+            overlap,
             len(self._scored_metrics),
             len(analyzed),
             len(ranked),
@@ -536,8 +549,9 @@ class MarketScannerService:
     def _empty_state(self) -> MarketScanState:
         session = get_us_market_session()
         ustats = universe_manager.stats()
+        overlap = self._snapshot_universe_overlap(self._snapshot_raw)
         no_signal = self._build_no_signal_reason(
-            session, self.universe_size, len(self._scored_metrics), 0, 0, {},
+            session, overlap, len(self._scored_metrics), 0, 0, {},
         )
         state = MarketScanState(
             universe_size=self.universe_size,
@@ -550,7 +564,7 @@ class MarketScannerService:
             no_signal_reason=no_signal,
             debug=ScannerStageCounts(
                 market_status=session,
-                symbols_scanned=self.universe_size,
+                symbols_scanned=overlap,
                 universe_symbols=ustats.get("total", 0),
                 phase1_quick_scanned=self.universe_size,
                 phase2_ranked_candidates=len(self._rank_pool),

@@ -47,6 +47,7 @@ class OpportunityNowSignal {
   final List<String> riskFlagsAr;
   final String detectedAt;
   final bool hasConfirmedNews;
+  final String volumeStatus;
 
   const OpportunityNowSignal({
     required this.symbol,
@@ -91,6 +92,7 @@ class OpportunityNowSignal {
     this.riskFlagsAr = const [],
     this.detectedAt = '',
     this.hasConfirmedNews = false,
+    this.volumeStatus = 'KNOWN',
   });
 
   factory OpportunityNowSignal.fromJson(Map<String, dynamic> json) {
@@ -139,8 +141,14 @@ class OpportunityNowSignal {
       riskFlagsAr: (json['risk_flags_ar'] as List?)?.map((e) => e.toString()).toList() ?? [],
       detectedAt: readJsonString(json, ['detected_at', 'detectedAt']),
       hasConfirmedNews: readJsonBool(json, ['has_confirmed_news', 'hasConfirmedNews']),
+      volumeStatus: readJsonString(json, ['volume_status', 'volumeStatus'], defaultValue: 'KNOWN'),
     );
   }
+
+  bool get isValidExtendedAlert =>
+      price > 0 && (extendedGapPct > 0 || detectionStage.isNotEmpty);
+
+  bool get volumeUnknown => volumeStatus.toUpperCase() == 'UNKNOWN';
 
   static String _statusArFromCode(String code) {
     switch (code) {
@@ -193,6 +201,7 @@ class OpportunityNowResponse {
   final int monitorPoolSize;
   final List<OpportunityNowSignal> signals;
   final OpportunityNowSignal? topSignal;
+  final OpportunityNowSignal? extendedAlert;
 
   const OpportunityNowResponse({
     required this.status,
@@ -206,6 +215,7 @@ class OpportunityNowResponse {
     required this.monitorPoolSize,
     required this.signals,
     required this.topSignal,
+    this.extendedAlert,
   });
 
   factory OpportunityNowResponse.fromJson(Map<String, dynamic> json) {
@@ -214,6 +224,13 @@ class OpportunityNowResponse {
     if (rawTop is Map<String, dynamic>) {
       top = OpportunityNowSignal.fromJson(rawTop);
       if (!top.isValid) top = null;
+    }
+
+    OpportunityNowSignal? extended;
+    final rawExtended = json['extended_alert'] ?? json['extendedAlert'];
+    if (rawExtended is Map<String, dynamic>) {
+      extended = OpportunityNowSignal.fromJson(rawExtended);
+      if (!extended.isValidExtendedAlert) extended = null;
     }
 
     final rawSignals = json['signals'] as List? ?? [];
@@ -241,8 +258,11 @@ class OpportunityNowResponse {
       monitorPoolSize: readJsonInt(json, ['monitor_pool_size', 'monitorPoolSize']),
       signals: signals,
       topSignal: top,
+      extendedAlert: extended,
     );
   }
+
+  bool get hasExtendedAlert => extendedAlert != null;
 
   bool get hasNoOpportunity => status == 'NONE' && topSignal == null;
 
@@ -250,9 +270,6 @@ class OpportunityNowResponse {
     if (topSignal != null && topSignal!.isValid) return topSignal;
     for (final s in signals) {
       if (s.isOpportunityNow || s.isReady || s.isWatch) return s;
-    }
-    for (final s in signals) {
-      if (s.isCancelled && s.isExtendedGap) return s;
     }
     return null;
   }

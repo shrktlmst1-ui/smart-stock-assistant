@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:smart_stock_assistant/models/market_pulse.dart';
 import 'package:smart_stock_assistant/models/opportunity_now.dart';
 import 'package:smart_stock_assistant/utils/json_parse.dart';
+import 'package:smart_stock_assistant/widgets/extended_alert_card.dart';
 import 'package:smart_stock_assistant/widgets/opportunity_now_card.dart';
 
 void main() {
@@ -68,6 +69,60 @@ void main() {
       });
 
       expect(list.enabled, isTrue);
+    });
+  });
+
+  group('ExtendedAlertHomeCard', () {
+    testWidgets('shows cancelled extended alert in red', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ExtendedAlertHomeCard(
+              alert: OpportunityNowSignal(
+                symbol: 'SUGP',
+                name: 'Su Group',
+                price: 4.28,
+                changePercent: 54.23,
+                score: 88,
+                status: 'CANCELLED',
+                statusAr: 'أُلغيت',
+                opportunityType: 'CANCELLED',
+                appearedAt: '2026-01-01T00:00:00Z',
+                expiresAt: '',
+                entryZone: 2.8,
+                entryZoneLow: 2.78,
+                entryZoneHigh: 2.89,
+                stopLoss: 2.7,
+                target1: 4.4,
+                target2: 4.5,
+                riskLevel: 'مرتفع',
+                riskRewardRatio: 0,
+                confirmedFactors: 0,
+                totalFactors: 17,
+                consecutiveConfirmations: 0,
+                reasonsAr: const [],
+                cancellationReasonsAr: const ['لا تطارد السهم'],
+                lateEntryWarning: true,
+                hasNewsCatalyst: true,
+                movementWithoutNews: false,
+                dataTimestamp: '',
+                dataAgeSeconds: 0,
+                session: 'PRE_MARKET',
+                previousClose: 2.775,
+                extendedPrice: 4.28,
+                extendedGapPct: 54.23,
+                detectionStage: 'EXPLOSIVE',
+                catalystTitleAr: 'امتثال ناسdaq',
+                volumeStatus: 'UNKNOWN',
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('قفزة خبرية'), findsOneWidget);
+      expect(find.text('تم رصد القفزة — لا تطارد السهم'), findsOneWidget);
+      expect(find.text('الحجم: غير متاح'), findsOneWidget);
     });
   });
 

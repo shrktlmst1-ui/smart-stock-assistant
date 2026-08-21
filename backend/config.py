@@ -189,8 +189,11 @@ def get_app_password_hash() -> str:
 
 
 def get_app_jwt_secret() -> str:
-    """Read JWT secret at call time — same value for encode and decode."""
-    return os.getenv("APP_JWT_SECRET", APP_JWT_SECRET).strip()
+    """Read JWT secret at call time from os.environ only — no module-level fallback."""
+    raw = os.environ.get("APP_JWT_SECRET")
+    if raw is None:
+        return ""
+    return raw.strip()
 
 
 def is_auth_password_configured() -> bool:

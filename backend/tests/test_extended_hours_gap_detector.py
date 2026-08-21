@@ -10,16 +10,35 @@ import pytest
 
 from analysis.extended_catalyst_classifier import classify_extended_catalyst
 from services.extended_hours_gap_detector import (
+    ExtendedQuoteExtract,
     apply_detection_to_engine,
     compute_extended_gap_pct,
     evaluate_gap,
     extended_gap_registry,
+    is_eligible_extended_gap_symbol,
     merge_monitor_pool,
+    scan_snapshot_raw,
     sync_extended_gap_detector,
+    _extract_extended_quote,
 )
-from services.live_confirmation_engine import live_confirmation_engine
+from services.live_confirmation_engine import CandidateState, live_confirmation_engine
+from services.market_scanner_service import MarketScannerService
 
 ET = ZoneInfo("America/New_York")
+
+
+def _sugp_snapshot_item(*, premarket_v=None, last_trade_p=4.28) -> dict:
+    now_ns = int(datetime.now(ET).timestamp() * 1_000_000_000)
+    return {
+        "ticker": "SUGP",
+        "prevDay": {"c": 2.775, "v": 8_231_278},
+        "preMarket": {"c": None, "v": premarket_v},
+        "day": {"c": 0, "v": 0},
+        "lastTrade": {"p": last_trade_p, "t": now_ns},
+        "min": {"c": last_trade_p},
+        "type": "CS",
+        "primary_exchange": "XNAS",
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -32,8 +51,8 @@ def _reset():
 
 
 def test_compute_extended_gap_pct_sugp():
-    gap = compute_extended_gap_pct(3.99, 2.775)
-    assert abs(gap - 43.78) < 0.1
+    gap = compute_extended_gap_pct(4.28, 2.775)
+    assert abs(gap - 54.23) < 0.1
 
 
 def test_sugp_nasdaq_compliance_not_earnings():
@@ -45,26 +64,66 @@ def test_sugp_nasdaq_compliance_not_earnings():
     assert result.catalyst_type != "EARNINGS"
 
 
-def test_sugp_full_detection():
+def test_sugp_extract_quote_unknown_volume():
+    pre_market_dt = datetime(2026, 6, 30, 8, 0, tzinfo=ET)
+    item = _sugp_snapshot_item(premarket_v=None)
+    with patch("services.extended_hours_gap_detector._is_trade_in_extended_session", return_value=True):
+        with patch("services.extended_hours_gap_detector._is_trade_fresh", return_value=True):
+            quote = _extract_extended_quote(item, "PRE_MARKET")
+    assert quote is not None
+    assert quote.extended_price == 4.28
+    assert quote.volume_status == "UNKNOWN"
+    assert quote.extended_volume == 0
+
+
+def test_sugp_bulk_snapshot_not_in_reference_universe():
+    item = _sugp_snapshot_item(premarket_v=None)
+    assert is_eligible_extended_gap_symbol("SUGP", item) is True
     now = datetime.now(timezone.utc).isoformat()
-    det = evaluate_gap(
-        symbol="SUGP",
-        name="Su Group Holdings",
-        session="PRE_MARKET",
-        previous_close=2.775,
-        extended_price=3.99,
-        extended_volume=7_200_000,
-        relative_volume=5.0,
-        news_headline="SUGP regained Nasdaq minimum bid compliance",
-        news_published_at=now,
-    )
-    assert det is not None
+    news = {
+        "SUGP": [
+            {
+                "title": "SUGP regained Nasdaq minimum bid compliance",
+                "published_utc": now,
+                "publisher": "news",
+            }
+        ]
+    }
+    with patch("services.extended_hours_gap_detector._is_trade_in_extended_session", return_value=True):
+        with patch("services.extended_hours_gap_detector._is_trade_fresh", return_value=True):
+            dets = scan_snapshot_raw({"SUGP": item}, session="PRE_MARKET", news_by_symbol=news)
+    assert len(dets) == 1
+    det = dets[0]
     assert det.symbol == "SUGP"
-    assert abs(det.extended_gap_pct - 43.78) < 0.1
+    assert abs(det.extended_gap_pct - 54.23) < 0.1
     assert det.detection_stage == "EXPLOSIVE"
     assert det.catalyst_type == "NASDAQ_COMPLIANCE"
-    assert det.has_confirmed_news is True
+    assert det.volume_status == "UNKNOWN"
     assert det.is_late_chase is True
+
+
+def test_sugp_with_enriched_volume():
+    item = _sugp_snapshot_item(premarket_v=None)
+    now = datetime.now(timezone.utc).isoformat()
+    news = {
+        "SUGP": [
+            {
+                "title": "SUGP regained Nasdaq minimum bid compliance",
+                "published_utc": now,
+                "publisher": "news",
+            }
+        ]
+    }
+    with patch("services.extended_hours_gap_detector._is_trade_in_extended_session", return_value=True):
+        with patch("services.extended_hours_gap_detector._is_trade_fresh", return_value=True):
+            dets = scan_snapshot_raw(
+                {"SUGP": item},
+                session="PRE_MARKET",
+                news_by_symbol=news,
+                volume_overrides={"SUGP": 9_140_000},
+            )
+    assert dets[0].extended_volume == 9_140_000
+    assert dets[0].volume_status == "KNOWN"
 
 
 def test_sugp_monitor_pool_and_cancelled_status():
@@ -74,8 +133,8 @@ def test_sugp_monitor_pool_and_cancelled_status():
         name="Su Group Holdings",
         session="PRE_MARKET",
         previous_close=2.775,
-        extended_price=3.99,
-        extended_volume=7_200_000,
+        extended_price=4.28,
+        extended_volume=9_140_000,
         relative_volume=5.0,
         news_headline="regained Nasdaq minimum bid compliance",
         news_published_at=now,
@@ -96,7 +155,7 @@ def test_sugp_monitor_pool_and_cancelled_status():
     assert any("لا تطارد" in r for r in state.cancellation_reasons)
 
 
-def test_sugp_appears_in_opportunity_now_response():
+def test_sugp_extended_alert_separate_from_top_signal():
     from services import opportunity_now_service as svc
 
     now = datetime.now(timezone.utc).isoformat()
@@ -104,32 +163,70 @@ def test_sugp_appears_in_opportunity_now_response():
         symbol="SUGP",
         session="PRE_MARKET",
         previous_close=2.775,
-        extended_price=3.99,
-        extended_volume=7_000_000,
+        extended_price=4.28,
+        extended_volume=9_140_000,
         relative_volume=4.0,
         news_headline="regained Nasdaq minimum bid compliance",
         news_published_at=now,
     )
     assert det is not None
-    live_confirmation_engine.set_monitor_symbols(["SUGP"])
     extended_gap_registry.register(det)
     apply_detection_to_engine(det)
 
-    pre_market_dt = datetime(2026, 6, 30, 8, 0, tzinfo=ET)
+    live_confirmation_engine._candidates["BTCT"] = CandidateState(
+        symbol="BTCT",
+        name="BTCT",
+        last_price=3.5,
+        change_percent=2.0,
+        score=72.0,
+        status="WATCH",
+        last_updated=now,
+    )
+    live_confirmation_engine.set_monitor_symbols(["SUGP", "BTCT"])
+
     with patch("services.opportunity_now_service.sync_engine_from_scanner"):
         with patch("services.opportunity_now_service.get_us_market_session", return_value="PRE_MARKET"):
             with patch("services.opportunity_now_service.is_regular_session", return_value=False):
                 resp = svc.get_opportunity_now()
 
-    sug_signals = [s for s in resp.signals if s.symbol == "SUGP"]
-    assert sug_signals, "SUGP must appear in signals"
-    sig = sug_signals[0]
-    assert abs(sig.extended_gap_pct - 43.78) < 0.1
-    assert sig.detection_stage == "EXPLOSIVE"
-    assert sig.catalyst_type == "NASDAQ_COMPLIANCE"
-    assert sig.status == "CANCELLED"
+    assert resp.extended_alert is not None
+    assert resp.extended_alert.symbol == "SUGP"
+    assert abs(resp.extended_alert.extended_gap_pct - 54.23) < 0.1
+    assert resp.extended_alert.detection_stage == "EXPLOSIVE"
+    assert resp.extended_alert.catalyst_type == "NASDAQ_COMPLIANCE"
+    assert resp.extended_alert.status == "CANCELLED"
     assert resp.top_signal is not None
-    assert resp.top_signal.symbol == "SUGP"
+    assert resp.top_signal.symbol == "BTCT"
+    assert resp.top_signal.status == "WATCH"
+
+
+def test_sugp_unknown_volume_still_in_extended_alert():
+    from services import opportunity_now_service as svc
+
+    now = datetime.now(timezone.utc).isoformat()
+    det = evaluate_gap(
+        symbol="SUGP",
+        session="PRE_MARKET",
+        previous_close=2.775,
+        extended_price=4.28,
+        extended_volume=0,
+        volume_status="UNKNOWN",
+        trade_is_fresh=True,
+        news_headline="regained Nasdaq minimum bid compliance",
+        news_published_at=now,
+    )
+    assert det is not None
+    extended_gap_registry.register(det)
+    apply_detection_to_engine(det)
+
+    with patch("services.opportunity_now_service.sync_engine_from_scanner"):
+        with patch("services.opportunity_now_service.get_us_market_session", return_value="PRE_MARKET"):
+            with patch("services.opportunity_now_service.is_regular_session", return_value=False):
+                resp = svc.get_opportunity_now()
+
+    assert resp.extended_alert is not None
+    assert resp.extended_alert.symbol == "SUGP"
+    assert resp.extended_alert.volume_status == "UNKNOWN"
 
 
 def test_detection_stages_progression():
@@ -156,6 +253,22 @@ def test_detection_stages_progression():
     explosive = evaluate_gap(**base, extended_price=6.10)
     assert explosive is not None
     assert explosive.detection_stage == "EXPLOSIVE"
+
+
+def test_market_coverage_pct_capped():
+    overlap = MarketScannerService._snapshot_universe_overlap({"AAA": {}, "BBB": {}})
+    assert overlap >= 0
+    counts = MarketScannerService._build_stage_counts(
+        "PRE_MARKET",
+        symbols_scanned=5000,
+        universe_symbols=1000,
+        passed_liquidity=100,
+        phase2_count=50,
+        analyzed=[],
+        passed_safety=0,
+        last_full_scan_at="",
+    )
+    assert counts.market_coverage_pct <= 100.0
 
 
 def test_sync_skips_regular_session():

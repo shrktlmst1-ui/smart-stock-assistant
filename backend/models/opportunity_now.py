@@ -55,6 +55,7 @@ class OpportunityNowSignal(BaseModel):
     risk_flags_ar: list[str] = Field(default_factory=list)
     detected_at: str = ""
     has_confirmed_news: bool = False
+    volume_status: str = "KNOWN"
 
 
 class OpportunityNowResponse(BaseModel):
@@ -69,3 +70,4 @@ class OpportunityNowResponse(BaseModel):
     monitor_pool_size: int = 0
     signals: list[OpportunityNowSignal] = Field(default_factory=list)
     top_signal: OpportunityNowSignal | None = None
+    extended_alert: OpportunityNowSignal | None = None

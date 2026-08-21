@@ -12,6 +12,7 @@ import '../services/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/stock_card.dart';
 import '../widgets/market_pulse_card.dart';
+import '../widgets/extended_alert_card.dart';
 import '../widgets/opportunity_now_card.dart';
 import 'market_pulse_screen.dart';
 import 'stock_analysis_screen.dart';
@@ -447,6 +448,8 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _buildHeroBanner(showingWatchlist),
             const SizedBox(height: 12),
+            ExtendedAlertHomeCard(alert: _opportunityNow?.extendedAlert),
+            if (_opportunityNow?.hasExtendedAlert == true) const SizedBox(height: 12),
             OpportunityNowHomeCard(
               data: _opportunityNow,
               loading: _opportunityLoading && _opportunityNow == null,

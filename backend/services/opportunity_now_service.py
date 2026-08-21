@@ -7,7 +7,11 @@ import logging
 from config import SCANNER_TICK_SECONDS
 from models.opportunity_now import OpportunityNowResponse, OpportunityNowSignal
 from models.stock import StockSnapshot
-from services.extended_hours_gap_detector import extended_gap_registry, sync_extended_gap_detector
+from services.extended_hours_gap_detector import (
+    ExtendedGapDetection,
+    extended_gap_registry,
+    sync_extended_gap_detector,
+)
 from services.live_confirmation_engine import (
     LIVE_MONITOR_POOL,
     STATUS_AR,
@@ -25,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 MAX_PRICE_USD = 10.0
 MIN_PRICE_USD = 0.50
+
+_STAGE_RANK = {"EXPLOSIVE": 3, "ACTIVE": 2, "WATCH": 1}
 
 
 def _collect_snapshots() -> list[StockSnapshot]:
@@ -82,6 +88,7 @@ def _extended_fields(symbol: str) -> dict:
         "detected_at": det.detected_at,
         "has_confirmed_news": det.has_confirmed_news,
         "has_news_catalyst": det.has_confirmed_news,
+        "volume_status": det.volume_status,
     }
 
 
@@ -119,36 +126,103 @@ def _candidate_to_signal(c) -> OpportunityNowSignal:
     )
 
 
+def _detection_to_signal(det: ExtendedGapDetection) -> OpportunityNowSignal:
+    cand = live_confirmation_engine._candidates.get(det.symbol)
+    if cand and cand.last_price > 0:
+        return _candidate_to_signal(cand)
+    status = "CANCELLED" if det.is_late_chase else "WATCH"
+    cancellation = [
+        "تم رصد القفزة، لكن الدخول الآن مطاردة",
+        "لا تدخل حتى يحدث تراجع وتأكيد جديد",
+        "لا تطارد السهم",
+    ] if det.is_late_chase else []
+    return OpportunityNowSignal(
+        symbol=det.symbol,
+        name=det.name,
+        price=det.extended_price,
+        change_percent=det.extended_gap_pct,
+        score={"WATCH": 65.0, "ACTIVE": 75.0, "EXPLOSIVE": 88.0}[det.detection_stage],
+        status=status,
+        status_ar=STATUS_AR.get(status, status),
+        opportunity_type=status,
+        appeared_at=det.detected_at,
+        expires_at="",
+        entry_zone=round((det.previous_close * 1.001 + det.previous_close * 1.04) / 2, 4),
+        entry_zone_low=round(det.previous_close * 1.001, 4),
+        entry_zone_high=round(det.previous_close * 1.04, 4),
+        stop_loss=round(det.previous_close * 0.97, 4),
+        target_1=round(det.extended_price * 1.03, 4),
+        target_2=round(det.extended_price * 1.06, 4),
+        risk_level="مرتفع",
+        risk_reward_ratio=0.0,
+        confirmed_factors=0,
+        total_factors=17,
+        consecutive_confirmations=0,
+        reasons_ar=[
+            f"{'قبل الافتتاح' if det.session == 'PRE_MARKET' else 'بعد الإغلاق'}: +{det.extended_gap_pct:.1f}%",
+            det.catalyst_title_ar,
+            *det.risk_flags_ar[:2],
+        ],
+        cancellation_reasons_ar=cancellation,
+        late_entry_warning=det.is_late_chase,
+        has_news_catalyst=det.has_confirmed_news,
+        data_timestamp=det.detected_at,
+        data_age_seconds=0.0,
+        session=det.session,
+        previous_close=det.previous_close,
+        extended_price=det.extended_price,
+        extended_gap_pct=det.extended_gap_pct,
+        extended_volume=det.extended_volume,
+        relative_volume=det.relative_volume,
+        catalyst_type=det.catalyst_type,
+        catalyst_title_ar=det.catalyst_title_ar,
+        catalyst_source=det.catalyst_source,
+        catalyst_published_at=det.catalyst_published_at,
+        detection_stage=det.detection_stage,
+        risk_flags_ar=det.risk_flags_ar,
+        detected_at=det.detected_at,
+        has_confirmed_news=det.has_confirmed_news,
+        volume_status=det.volume_status,
+    )
+
+
 def _pick_top_signal(
     signals: list[OpportunityNowSignal],
     best,
     *,
     market_open: bool,
-    session: str = "",
 ) -> OpportunityNowSignal | None:
-    extended = [s for s in signals if s.extended_gap_pct > 0]
-    if extended and session in ("PRE_MARKET", "AFTER_HOURS"):
-        return max(
-            extended,
-            key=lambda s: (s.detection_stage == "EXPLOSIVE", s.extended_gap_pct, s.score),
-        )
-
+    """Regular trading opportunity only — extended gaps use extended_alert."""
     if best and best.last_price > 0:
         top = _candidate_to_signal(best)
         if not market_open and top.status == "NOW":
             top.status = "WATCH"
             top.status_ar = STATUS_AR["WATCH"]
-        return top if top.price > 0 else None
+        if top.price > 0 and top.score > 0:
+            return top
 
-    extended = [s for s in signals if s.detection_stage == "EXPLOSIVE" and s.extended_gap_pct > 0]
-    if extended:
-        return max(extended, key=lambda s: s.extended_gap_pct)
-    cancelled_ext = [s for s in signals if s.status == "CANCELLED" and s.extended_gap_pct > 0]
-    if cancelled_ext:
-        return max(cancelled_ext, key=lambda s: s.extended_gap_pct)
-    watch_ext = [s for s in signals if s.detection_stage and s.extended_gap_pct > 0]
-    if watch_ext:
-        return max(watch_ext, key=lambda s: s.extended_gap_pct)
+    regular = [
+        s for s in signals
+        if s.score > 0 and s.extended_gap_pct <= 0 and not s.detection_stage
+    ]
+    for preferred in ("NOW", "READY", "WATCH"):
+        tier = [s for s in regular if s.status == preferred]
+        if tier:
+            return max(tier, key=lambda s: s.score)
+    return None
+
+
+def _pick_extended_alert() -> OpportunityNowSignal | None:
+    detections = extended_gap_registry.all()
+    if not detections:
+        return None
+    best = max(
+        detections,
+        key=lambda d: (_STAGE_RANK.get(d.detection_stage, 0), d.extended_gap_pct),
+    )
+    sig = _detection_to_signal(best)
+    if sig.price > 0 and (sig.extended_gap_pct > 0 or sig.detection_stage):
+        return sig
     return None
 
 
@@ -194,7 +268,8 @@ def get_opportunity_now() -> OpportunityNowResponse:
             reverse=True,
         )
 
-        top = _pick_top_signal(signals, best, market_open=market_open, session=session)
+        top = _pick_top_signal(signals, best, market_open=market_open)
+        extended_alert = _pick_extended_alert()
         if top:
             resp_status = top.status if top.status != "NONE" else "NONE"
         else:
@@ -219,6 +294,7 @@ def get_opportunity_now() -> OpportunityNowResponse:
             monitor_pool_size=len(live_confirmation_engine._monitor_symbols),
             signals=signals,
             top_signal=top if top and top.price > 0 else None,
+            extended_alert=extended_alert,
         )
     except Exception as exc:
         logger.warning("Opportunity now unavailable: %s", type(exc).__name__)
@@ -230,4 +306,5 @@ def get_opportunity_now() -> OpportunityNowResponse:
             message="تعذر تحميل فرصة الآن مؤقتاً — لا توجد فرصة مكتملة الآن",
             signals=[],
             top_signal=None,
+            extended_alert=None,
         )

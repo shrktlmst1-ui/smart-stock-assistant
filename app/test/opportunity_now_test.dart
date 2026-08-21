@@ -128,6 +128,62 @@ void main() {
       expect(resp.displayTop?.status, 'WATCH');
     });
 
+    test('parses extended_alert separately from top_signal', () {
+      final resp = OpportunityNowResponse.fromJson({
+        'status': 'WATCH',
+        'market_status': 'PRE_MARKET',
+        'market_open': false,
+        'scan_interval_seconds': 15,
+        'message': '',
+        'top_signal': {
+          'symbol': 'BTCT',
+          'name': 'BTCT',
+          'price': 3.5,
+          'change_percent': 2,
+          'score': 72,
+          'status': 'WATCH',
+          'status_ar': 'مراقبة',
+          'appeared_at': '2026-01-01T00:00:00Z',
+          'expires_at': '2026-01-01T00:15:00Z',
+          'entry_zone': 3.5,
+          'stop_loss': 3.4,
+          'target_1': 3.6,
+          'target_2': 3.7,
+          'risk_level': 'متوسط',
+          'reasons_ar': [],
+        },
+        'extended_alert': {
+          'symbol': 'SUGP',
+          'name': 'Su Group',
+          'price': 4.28,
+          'change_percent': 54.23,
+          'score': 88,
+          'status': 'CANCELLED',
+          'status_ar': 'أُلغيت',
+          'appeared_at': '2026-01-01T00:00:00Z',
+          'expires_at': '',
+          'entry_zone': 2.8,
+          'stop_loss': 2.7,
+          'target_1': 4.4,
+          'target_2': 4.5,
+          'risk_level': 'مرتفع',
+          'reasons_ar': [],
+          'extended_gap_pct': 54.23,
+          'detection_stage': 'EXPLOSIVE',
+          'previous_close': 2.775,
+          'extended_price': 4.28,
+          'catalyst_type': 'NASDAQ_COMPLIANCE',
+          'volume_status': 'UNKNOWN',
+        },
+        'signals': [],
+      });
+
+      expect(resp.topSignal?.symbol, 'BTCT');
+      expect(resp.extendedAlert?.symbol, 'SUGP');
+      expect(resp.displayTop?.symbol, 'BTCT');
+      expect(resp.hasExtendedAlert, isTrue);
+    });
+
     test('market closed message preserved', () {
       final resp = OpportunityNowResponse.fromJson({
         'status': 'NONE',

@@ -39,3 +39,4 @@ class ExtendedGapFields(BaseModel):
     risk_flags_ar: list[str] = Field(default_factory=list)
     detected_at: str = ""
     has_confirmed_news: bool = False
+    volume_status: str = "KNOWN"
