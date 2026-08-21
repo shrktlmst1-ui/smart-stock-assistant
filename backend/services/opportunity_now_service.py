@@ -7,6 +7,7 @@ import logging
 from config import SCANNER_TICK_SECONDS
 from models.opportunity_now import OpportunityNowResponse, OpportunityNowSignal
 from models.stock import StockSnapshot
+from services.extended_hours_gap_detector import extended_gap_registry, sync_extended_gap_detector
 from services.live_confirmation_engine import (
     LIVE_MONITOR_POOL,
     STATUS_AR,
@@ -60,8 +61,33 @@ def _risk_level(score: float, spread: float) -> str:
     return "مرتفع"
 
 
+def _extended_fields(symbol: str) -> dict:
+    det = extended_gap_registry.get(symbol)
+    if not det:
+        return {}
+    session_label = "PRE_MARKET" if det.session == "PRE_MARKET" else "AFTER_HOURS"
+    return {
+        "session": session_label,
+        "previous_close": det.previous_close,
+        "extended_price": det.extended_price,
+        "extended_gap_pct": det.extended_gap_pct,
+        "extended_volume": det.extended_volume,
+        "relative_volume": det.relative_volume,
+        "catalyst_type": det.catalyst_type,
+        "catalyst_title_ar": det.catalyst_title_ar,
+        "catalyst_source": det.catalyst_source,
+        "catalyst_published_at": det.catalyst_published_at,
+        "detection_stage": det.detection_stage,
+        "risk_flags_ar": det.risk_flags_ar,
+        "detected_at": det.detected_at,
+        "has_confirmed_news": det.has_confirmed_news,
+        "has_news_catalyst": det.has_confirmed_news,
+    }
+
+
 def _candidate_to_signal(c) -> OpportunityNowSignal:
     spread = c.spread_pct
+    ext = _extended_fields(c.symbol)
     return OpportunityNowSignal(
         symbol=c.symbol,
         name=c.name,
@@ -89,12 +115,48 @@ def _candidate_to_signal(c) -> OpportunityNowSignal:
         late_entry_warning=any("VWAP" in r or "مطاردة" in r for r in c.cancellation_reasons),
         data_timestamp=c.last_updated,
         data_age_seconds=round(c.data_age_seconds, 1),
+        **ext,
     )
 
 
+def _pick_top_signal(
+    signals: list[OpportunityNowSignal],
+    best,
+    *,
+    market_open: bool,
+    session: str = "",
+) -> OpportunityNowSignal | None:
+    extended = [s for s in signals if s.extended_gap_pct > 0]
+    if extended and session in ("PRE_MARKET", "AFTER_HOURS"):
+        return max(
+            extended,
+            key=lambda s: (s.detection_stage == "EXPLOSIVE", s.extended_gap_pct, s.score),
+        )
+
+    if best and best.last_price > 0:
+        top = _candidate_to_signal(best)
+        if not market_open and top.status == "NOW":
+            top.status = "WATCH"
+            top.status_ar = STATUS_AR["WATCH"]
+        return top if top.price > 0 else None
+
+    extended = [s for s in signals if s.detection_stage == "EXPLOSIVE" and s.extended_gap_pct > 0]
+    if extended:
+        return max(extended, key=lambda s: s.extended_gap_pct)
+    cancelled_ext = [s for s in signals if s.status == "CANCELLED" and s.extended_gap_pct > 0]
+    if cancelled_ext:
+        return max(cancelled_ext, key=lambda s: s.extended_gap_pct)
+    watch_ext = [s for s in signals if s.detection_stage and s.extended_gap_pct > 0]
+    if watch_ext:
+        return max(watch_ext, key=lambda s: s.extended_gap_pct)
+    return None
+
+
 def sync_engine_from_scanner() -> None:
-    monitor = market_scanner._rank_pool[:LIVE_MONITOR_POOL]
-    live_confirmation_engine.set_monitor_symbols(monitor)
+    sync_extended_gap_detector()
+    monitor = live_confirmation_engine._monitor_symbols or market_scanner._rank_pool[:LIVE_MONITOR_POOL]
+    if not live_confirmation_engine._monitor_symbols:
+        live_confirmation_engine.set_monitor_symbols(monitor)
     for snap in _collect_snapshots():
         if snap.symbol.upper() in live_confirmation_engine._monitor_symbols:
             try:
@@ -120,20 +182,22 @@ def get_opportunity_now() -> OpportunityNowResponse:
         best = live_confirmation_engine.best_candidate(market_open=market_open)
         signals: list[OpportunityNowSignal] = []
         for cand in live_confirmation_engine._candidates.values():
-            if cand.last_price <= 0 or cand.score <= 0:
+            ext = extended_gap_registry.get(cand.symbol)
+            if cand.last_price <= 0:
                 continue
-            if cand.status in ("WATCH", "READY", "NOW", "CANCELLED"):
-                signals.append(_candidate_to_signal(cand))
-        signals.sort(key=lambda s: (s.status == "NOW", s.score), reverse=True)
+            if ext or (cand.score > 0 and cand.status in ("WATCH", "READY", "NOW", "CANCELLED")):
+                sig = _candidate_to_signal(cand)
+                if sig.price > 0 and (sig.score > 0 or sig.extended_gap_pct > 0):
+                    signals.append(sig)
+        signals.sort(
+            key=lambda s: (s.detection_stage == "EXPLOSIVE", s.extended_gap_pct, s.status == "NOW", s.score),
+            reverse=True,
+        )
 
-        if best and best.last_price > 0:
-            top = _candidate_to_signal(best)
-            if not market_open and top.status == "NOW":
-                top.status = "WATCH"
-                top.status_ar = STATUS_AR["WATCH"]
+        top = _pick_top_signal(signals, best, market_open=market_open, session=session)
+        if top:
             resp_status = top.status if top.status != "NONE" else "NONE"
         else:
-            top = None
             resp_status = "NONE"
 
         none_message = "لا توجد فرصة مكتملة الآن"

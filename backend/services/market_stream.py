@@ -136,7 +136,7 @@ class MarketStream:
                 try:
                     sync_engine_from_scanner()
                 except Exception as exc:
-                    logger.debug("Live engine sync skipped: %s", type(exc).__name__)
+                    logger.debug("Live/extended engine sync skipped: %s", type(exc).__name__)
 
                 if self.last_tick_ms > 30000:
                     logger.warning("Scanner tick slow: %.0fms (pool=%d)", self.last_tick_ms, state.candidate_pool)

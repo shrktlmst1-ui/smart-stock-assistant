@@ -40,6 +40,21 @@ class OpportunityNowSignal(BaseModel):
     movement_without_news: bool = False
     data_timestamp: str = ""
     data_age_seconds: float = 0.0
+    # Extended-hours news-gap fields (optional — backward compatible)
+    session: str = ""
+    previous_close: float = 0.0
+    extended_price: float = 0.0
+    extended_gap_pct: float = 0.0
+    extended_volume: int = 0
+    relative_volume: float = 0.0
+    catalyst_type: str = ""
+    catalyst_title_ar: str = ""
+    catalyst_source: str = ""
+    catalyst_published_at: str = ""
+    detection_stage: str = ""
+    risk_flags_ar: list[str] = Field(default_factory=list)
+    detected_at: str = ""
+    has_confirmed_news: bool = False
 
 
 class OpportunityNowResponse(BaseModel):

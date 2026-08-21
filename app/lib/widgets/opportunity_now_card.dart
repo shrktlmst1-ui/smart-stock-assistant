@@ -190,6 +190,72 @@ class OpportunityNowHomeCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
+            if (top.isExtendedGap) ...[
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  if (top.sessionLabelAr.isNotEmpty)
+                    _StatusChip(label: top.sessionLabelAr, color: AppTheme.primary),
+                  if (top.extendedGapPct != 0)
+                    _StatusChip(
+                      label: 'قفزة ${top.extendedGapPct >= 0 ? '+' : ''}${top.extendedGapPct.toStringAsFixed(1)}%',
+                      color: top.extendedGapPct >= 20 ? AppTheme.success : const Color(0xFFD29922),
+                    ),
+                  if (top.detectionStage.isNotEmpty)
+                    _StatusChip(label: top.detectionStage, color: AppTheme.primary),
+                  _StatusChip(
+                    label: top.hasConfirmedNews ? 'خبر مؤكد' : 'لا يوجد خبر مؤكد',
+                    color: top.hasConfirmedNews ? AppTheme.success : AppTheme.textSecondary,
+                  ),
+                ],
+              ),
+              if (top.previousClose > 0) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'من إغلاق ${top.previousClose.toStringAsFixed(2)} → ${top.extendedPrice.toStringAsFixed(2)}',
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                ),
+              ],
+              if (top.extendedVolume > 0) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'حجم التداول الممتد: ${_formatVolume(top.extendedVolume)}',
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                ),
+              ],
+              if (top.catalystTitleAr.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'سبب الحركة: ${top.catalystTitleAr}',
+                  style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+                ),
+              ],
+              if (top.catalystPublishedAt.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'وقت الخبر: ${_shortTime(top.catalystPublishedAt)}',
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                ),
+              ],
+              if (top.riskFlagsAr.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, size: 16, color: AppTheme.danger),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        top.riskFlagsAr.join(' • '),
+                        style: const TextStyle(color: AppTheme.danger, fontSize: 12, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 8),
+            ],
             Wrap(
               spacing: 8,
               runSpacing: 6,
@@ -311,6 +377,12 @@ class OpportunityNowHomeCard extends StatelessWidget {
   String _shortTime(String iso) {
     if (iso.length >= 16) return iso.substring(11, 16);
     return iso;
+  }
+
+  String _formatVolume(int vol) {
+    if (vol >= 1000000) return '${(vol / 1000000).toStringAsFixed(1)}M';
+    if (vol >= 1000) return '${(vol / 1000).toStringAsFixed(0)}K';
+    return vol.toString();
   }
 }
 

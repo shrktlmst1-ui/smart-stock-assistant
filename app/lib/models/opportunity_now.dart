@@ -32,6 +32,21 @@ class OpportunityNowSignal {
   final bool movementWithoutNews;
   final String dataTimestamp;
   final double dataAgeSeconds;
+  // Extended-hours gap fields
+  final String session;
+  final double previousClose;
+  final double extendedPrice;
+  final double extendedGapPct;
+  final int extendedVolume;
+  final double relativeVolume;
+  final String catalystType;
+  final String catalystTitleAr;
+  final String catalystSource;
+  final String catalystPublishedAt;
+  final String detectionStage;
+  final List<String> riskFlagsAr;
+  final String detectedAt;
+  final bool hasConfirmedNews;
 
   const OpportunityNowSignal({
     required this.symbol,
@@ -62,6 +77,20 @@ class OpportunityNowSignal {
     required this.movementWithoutNews,
     required this.dataTimestamp,
     required this.dataAgeSeconds,
+    this.session = '',
+    this.previousClose = 0,
+    this.extendedPrice = 0,
+    this.extendedGapPct = 0,
+    this.extendedVolume = 0,
+    this.relativeVolume = 0,
+    this.catalystType = '',
+    this.catalystTitleAr = '',
+    this.catalystSource = '',
+    this.catalystPublishedAt = '',
+    this.detectionStage = '',
+    this.riskFlagsAr = const [],
+    this.detectedAt = '',
+    this.hasConfirmedNews = false,
   });
 
   factory OpportunityNowSignal.fromJson(Map<String, dynamic> json) {
@@ -96,6 +125,20 @@ class OpportunityNowSignal {
       movementWithoutNews: readJsonBool(json, ['movement_without_news', 'movementWithoutNews']),
       dataTimestamp: readJsonString(json, ['data_timestamp', 'dataTimestamp']),
       dataAgeSeconds: (json['data_age_seconds'] as num?)?.toDouble() ?? 0,
+      session: readJsonString(json, ['session']),
+      previousClose: (json['previous_close'] as num?)?.toDouble() ?? 0,
+      extendedPrice: (json['extended_price'] as num?)?.toDouble() ?? 0,
+      extendedGapPct: (json['extended_gap_pct'] as num?)?.toDouble() ?? 0,
+      extendedVolume: readJsonInt(json, ['extended_volume', 'extendedVolume']),
+      relativeVolume: (json['relative_volume'] as num?)?.toDouble() ?? 0,
+      catalystType: readJsonString(json, ['catalyst_type', 'catalystType']),
+      catalystTitleAr: readJsonString(json, ['catalyst_title_ar', 'catalystTitleAr']),
+      catalystSource: readJsonString(json, ['catalyst_source', 'catalystSource']),
+      catalystPublishedAt: readJsonString(json, ['catalyst_published_at', 'catalystPublishedAt']),
+      detectionStage: readJsonString(json, ['detection_stage', 'detectionStage']),
+      riskFlagsAr: (json['risk_flags_ar'] as List?)?.map((e) => e.toString()).toList() ?? [],
+      detectedAt: readJsonString(json, ['detected_at', 'detectedAt']),
+      hasConfirmedNews: readJsonBool(json, ['has_confirmed_news', 'hasConfirmedNews']),
     );
   }
 
@@ -123,6 +166,19 @@ class OpportunityNowSignal {
   bool get isWatch => status == 'WATCH';
 
   bool get isCancelled => status == 'CANCELLED';
+
+  bool get isExtendedGap => extendedGapPct > 0 || detectionStage.isNotEmpty;
+
+  String get sessionLabelAr {
+    switch (session) {
+      case 'PRE_MARKET':
+        return 'قبل الافتتاح';
+      case 'AFTER_HOURS':
+        return 'بعد الإغلاق';
+      default:
+        return '';
+    }
+  }
 }
 
 class OpportunityNowResponse {
@@ -194,6 +250,9 @@ class OpportunityNowResponse {
     if (topSignal != null && topSignal!.isValid) return topSignal;
     for (final s in signals) {
       if (s.isOpportunityNow || s.isReady || s.isWatch) return s;
+    }
+    for (final s in signals) {
+      if (s.isCancelled && s.isExtendedGap) return s;
     }
     return null;
   }
