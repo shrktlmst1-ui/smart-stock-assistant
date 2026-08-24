@@ -185,9 +185,12 @@ def test_sugp_extended_alert_separate_from_top_signal():
     live_confirmation_engine.set_monitor_symbols(["SUGP", "BTCT"])
 
     with patch("services.opportunity_now_service.sync_engine_from_scanner"):
-        with patch("services.opportunity_now_service.get_us_market_session", return_value="PRE_MARKET"):
-            with patch("services.opportunity_now_service.is_regular_session", return_value=False):
-                resp = svc.get_opportunity_now()
+        with patch("services.opportunity_now_service.sync_premarket_scanner") as mock_pm:
+            from models.premarket_opportunity import PremarketScanResult
+            mock_pm.return_value = PremarketScanResult(message="لا توجد فرصة فعلية الآن")
+            with patch("services.opportunity_now_service.get_us_market_session", return_value="PRE_MARKET"):
+                with patch("services.opportunity_now_service.is_regular_session", return_value=False):
+                    resp = svc.get_opportunity_now()
 
     assert resp.extended_alert is not None
     assert resp.extended_alert.symbol == "SUGP"
@@ -195,9 +198,7 @@ def test_sugp_extended_alert_separate_from_top_signal():
     assert resp.extended_alert.detection_stage == "EXPLOSIVE"
     assert resp.extended_alert.catalyst_type == "NASDAQ_COMPLIANCE"
     assert resp.extended_alert.status == "CANCELLED"
-    assert resp.top_signal is not None
-    assert resp.top_signal.symbol == "BTCT"
-    assert resp.top_signal.status == "WATCH"
+    assert resp.top_signal is None
 
 
 def test_sugp_unknown_volume_still_in_extended_alert():

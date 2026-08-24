@@ -230,6 +230,25 @@ class PolygonClient:
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
         return df[["open", "high", "low", "close", "volume", "timestamp"]]
 
+    async def get_last_nbbo(self, symbol: str) -> dict[str, Any]:
+        data = await self._request(f"/v2/last/nbbo/{symbol.upper()}")
+        return data.get("results") or {}
+
+    async def get_minute_bars_on_date(self, symbol: str, date: str) -> pd.DataFrame:
+        """Minute aggregates for a single calendar day (YYYY-MM-DD)."""
+        data = await self._request(
+            f"/v2/aggs/ticker/{symbol.upper()}/range/1/minute/{date}/{date}",
+            params={"adjusted": "true", "sort": "asc", "limit": 50000},
+        )
+        return self._results_to_df(data.get("results", []))
+
+    async def get_premarket_minute_bars(self, symbol: str, session_date: str | None = None) -> pd.DataFrame:
+        """Today's (or given date) minute bars — caller filters to premarket window."""
+        from zoneinfo import ZoneInfo
+
+        date = session_date or datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        return await self.get_minute_bars_on_date(symbol, date)
+
     async def get_news(self, symbol: str, limit: int = 5) -> list[dict[str, Any]]:
         data = await self._request(
             "/v2/reference/news",

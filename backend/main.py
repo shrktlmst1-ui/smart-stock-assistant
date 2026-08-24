@@ -38,6 +38,7 @@ from models.smart_opportunity import (
     SmartOpportunitiesResponse,
 )
 from services.smart_opportunities_service import get_smart_opportunities
+from services.best_opportunities_service import get_best_opportunities_premarket
 from services.opportunity_now_service import get_opportunity_now
 from models.opportunity_now import OpportunityNowResponse
 from models.performance import BacktestMetrics, JournalEntry, PerformanceMetrics, ProductionStatus
@@ -418,6 +419,10 @@ def opportunity_now():
 async def opportunities(limit: int = Query(default=20, ge=1, le=20)):
     state = market_scanner.get_state()
     session = state.market_status if state and state.market_status else get_us_market_session()
+
+    if session == "PRE_MARKET":
+        return get_best_opportunities_premarket(limit=limit, state=state)
+
     if not state:
         return OpportunitiesResponse(
             market_status=session,

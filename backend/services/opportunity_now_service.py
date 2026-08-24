@@ -6,6 +6,7 @@ import logging
 
 from config import SCANNER_TICK_SECONDS
 from models.opportunity_now import OpportunityNowResponse, OpportunityNowSignal
+from models.premarket_opportunity import PremarketOpportunitySignal, PremarketScanResult
 from models.stock import StockSnapshot
 from services.extended_hours_gap_detector import (
     ExtendedGapDetection,
@@ -19,6 +20,7 @@ from services.live_confirmation_engine import (
 )
 from services.market_scanner_service import market_scanner
 from services.market_session import get_us_market_session, is_regular_session, session_explanation
+from services.premarket_opportunity_scanner import sync_premarket_scanner
 from services.opportunity_now_scoring import (
     SIGNAL_TTL_SECONDS,
     _snapshot_to_signal,
@@ -226,6 +228,50 @@ def _pick_extended_alert() -> OpportunityNowSignal | None:
     return None
 
 
+def _premarket_to_opportunity_signal(pm: PremarketOpportunitySignal) -> OpportunityNowSignal:
+    status = "NOW" if pm.status == "OPPORTUNITY" else "WATCH"
+    return OpportunityNowSignal(
+        symbol=pm.symbol,
+        name=pm.symbol,
+        price=pm.current_price,
+        change_percent=pm.premarket_change_percent,
+        score=0.0,
+        status=status,
+        status_ar=STATUS_AR.get(status, status),
+        opportunity_type=pm.trigger_type or "PREMARKET",
+        appeared_at="",
+        expires_at="",
+        entry_zone=pm.entry,
+        entry_zone_low=pm.entry,
+        entry_zone_high=pm.entry,
+        stop_loss=pm.stop_loss,
+        target_1=pm.tp1,
+        target_2=pm.tp2,
+        risk_level="مرتفع",
+        risk_reward_ratio=pm.risk_reward,
+        confirmed_factors=0,
+        total_factors=17,
+        consecutive_confirmations=0,
+        reasons_ar=[pm.reason] if pm.reason else [],
+        cancellation_reasons_ar=[],
+        late_entry_warning=False,
+        has_news_catalyst=False,
+        movement_without_news=False,
+        data_timestamp="",
+        data_age_seconds=0.0,
+        session="PRE_MARKET",
+        previous_close=0.0,
+        extended_price=pm.current_price,
+        extended_gap_pct=pm.premarket_change_percent,
+        extended_volume=pm.premarket_volume,
+        relative_volume=pm.relative_volume,
+        detection_stage=pm.trigger_type,
+        risk_flags_ar=[],
+        volume_status="KNOWN",
+    )
+
+
+
 def sync_engine_from_scanner() -> None:
     sync_extended_gap_detector()
     monitor = live_confirmation_engine._monitor_symbols or market_scanner._rank_pool[:LIVE_MONITOR_POOL]
@@ -253,6 +299,10 @@ def get_opportunity_now() -> OpportunityNowResponse:
 
         sync_engine_from_scanner()
 
+        premarket_scan: PremarketScanResult | None = None
+        if session == "PRE_MARKET":
+            premarket_scan = sync_premarket_scanner()
+
         best = live_confirmation_engine.best_candidate(market_open=market_open)
         signals: list[OpportunityNowSignal] = []
         for cand in live_confirmation_engine._candidates.values():
@@ -263,19 +313,36 @@ def get_opportunity_now() -> OpportunityNowResponse:
                 sig = _candidate_to_signal(cand)
                 if sig.price > 0 and (sig.score > 0 or sig.extended_gap_pct > 0):
                     signals.append(sig)
+
+        if premarket_scan:
+            for pm in premarket_scan.opportunities + premarket_scan.watches:
+                sig = _premarket_to_opportunity_signal(pm)
+                if sig.price > 0:
+                    signals.append(sig)
+
         signals.sort(
             key=lambda s: (s.detection_stage == "EXPLOSIVE", s.extended_gap_pct, s.status == "NOW", s.score),
             reverse=True,
         )
 
-        top = _pick_top_signal(signals, best, market_open=market_open)
-        extended_alert = _pick_extended_alert()
-        if top:
-            resp_status = top.status if top.status != "NONE" else "NONE"
+        if session == "PRE_MARKET" and premarket_scan:
+            if premarket_scan.top_opportunity:
+                top = _premarket_to_opportunity_signal(premarket_scan.top_opportunity)
+                resp_status = "NOW"
+                none_message = premarket_scan.message
+            else:
+                top = None
+                resp_status = "NONE"
+                none_message = "لا توجد فرصة دخول فعلية الآن"
         else:
-            resp_status = "NONE"
+            top = _pick_top_signal(signals, best, market_open=market_open)
+            if top:
+                resp_status = top.status if top.status != "NONE" else "NONE"
+            else:
+                resp_status = "NONE"
+            none_message = "لا توجد فرصة مكتملة الآن"
 
-        none_message = "لا توجد فرصة مكتملة الآن"
+        extended_alert = _pick_extended_alert()
         live_source = (
             "websocket"
             if live_confirmation_engine.ws_connected and not live_confirmation_engine.ws_fallback
@@ -295,6 +362,7 @@ def get_opportunity_now() -> OpportunityNowResponse:
             signals=signals,
             top_signal=top if top and top.price > 0 else None,
             extended_alert=extended_alert,
+            premarket_scan=premarket_scan,
         )
     except Exception as exc:
         logger.warning("Opportunity now unavailable: %s", type(exc).__name__)
@@ -307,4 +375,5 @@ def get_opportunity_now() -> OpportunityNowResponse:
             signals=[],
             top_signal=None,
             extended_alert=None,
+            premarket_scan=None,
         )

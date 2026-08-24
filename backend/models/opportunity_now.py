@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from models.premarket_opportunity import PremarketScanResult
+
 OpportunityStatusCode = Literal["NONE", "WATCH", "READY", "NOW", "CANCELLED"]
 OpportunityNowStatusAr = Literal["فرصة الآن", "استعد", "مراقبة", "تجنب", "أُلغيت"]
 RiskLevelAr = Literal["منخفض", "متوسط", "مرتفع"]
@@ -71,3 +73,4 @@ class OpportunityNowResponse(BaseModel):
     signals: list[OpportunityNowSignal] = Field(default_factory=list)
     top_signal: OpportunityNowSignal | None = None
     extended_alert: OpportunityNowSignal | None = None
+    premarket_scan: PremarketScanResult | None = None
