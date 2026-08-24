@@ -171,6 +171,12 @@ PREMOVE_MIN_RRR: float = float(os.getenv("PREMOVE_MIN_RRR", "1.2"))
 PREMOVE_LATE_RSI: float = float(os.getenv("PREMOVE_LATE_RSI", "85"))
 PREMOVE_LATE_EXTENSION_PCT: float = float(os.getenv("PREMOVE_LATE_EXTENSION_PCT", "18"))
 PREMOVE_BAR_CACHE_TTL: int = int(os.getenv("PREMOVE_BAR_CACHE_TTL", "60"))
+PREMOVE_BAR_CACHE_MAX: int = int(os.getenv("PREMOVE_BAR_CACHE_MAX", "200"))
+
+# API snapshot cache + memory bounds (performance only — no signal logic)
+SYMBOL_CACHE_MAX_ENTRIES: int = int(os.getenv("SYMBOL_CACHE_MAX_ENTRIES", "400"))
+TICKER_META_CACHE_MAX_ENTRIES: int = int(os.getenv("TICKER_META_CACHE_MAX_ENTRIES", "2000"))
+PER_SYMBOL_PREP_TIMEOUT_SEC: float = float(os.getenv("PER_SYMBOL_PREP_TIMEOUT_SEC", "20"))
 
 # Stage Progression Engine — evidence-based lifecycle (symbol-agnostic)
 STAGE_HISTORY_MAX: int = int(os.getenv("STAGE_HISTORY_MAX", "8"))

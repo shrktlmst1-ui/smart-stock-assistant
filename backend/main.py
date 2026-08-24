@@ -418,22 +418,29 @@ def opportunity_now():
 
 
 @app.get("/stocks/opportunities", response_model=OpportunitiesResponse)
-async def opportunities(limit: int = Query(default=20, ge=1, le=20)):
+async def opportunities(
+    limit: int = Query(default=20, ge=1, le=20),
+    background_refresh: bool = Query(default=False),
+):
+    from services.snapshot_cache_service import get_opportunities_response
+
     state = market_scanner.get_state()
     session = state.market_status if state and state.market_status else get_us_market_session()
 
     if session in ("PRE_MARKET", "REGULAR", "AFTER_HOURS"):
-        return build_best_opportunities_response(
+        return get_opportunities_response(
             limit=limit,
             state=state,
             session=session,
-            snapshot_raw=market_scanner._snapshot_raw,
+            trigger_refresh=True,
+            force_refresh=background_refresh,
         )
 
     if not state:
         return OpportunitiesResponse(
             market_status=session,
             explanation=session_explanation(session),
+            api_status="NO_OPPORTUNITIES",
         )
 
     snapshots = {s.symbol: s for s in state.snapshots}
@@ -449,6 +456,7 @@ async def opportunities(limit: int = Query(default=20, ge=1, le=20)):
         explanation=state.explanation or session_explanation(session),
         no_signal_reason=state.no_signal_reason,
         debug=state.debug,
+        api_status="OK" if live or watchlist else "NO_OPPORTUNITIES",
     )
 
 
@@ -459,10 +467,16 @@ async def search(q: str = Query(..., min_length=1)):
 
 @app.get("/pre-move/stats")
 def pre_move_stats():
-    """Pre-Move Predictor scan stats and KPIs."""
-    from services.pre_move_predictor_service import get_last_pre_move_scan, sync_pre_move_scan
+    """Pre-Move Predictor scan stats and KPIs — cache-first."""
+    from services.pre_move_predictor_service import get_last_pre_move_scan
+    from services.snapshot_cache_service import schedule_opportunities_refresh
 
-    scan = get_last_pre_move_scan() or sync_pre_move_scan(deep_limit=20)
+    scan = get_last_pre_move_scan()
+    if scan is None:
+        schedule_opportunities_refresh()
+        from models.pre_move import PreMoveScanResult
+
+        scan = PreMoveScanResult(message="refresh scheduled")
     return {
         "stats": scan.stats.model_dump(),
         "signals_count": len(scan.signals),

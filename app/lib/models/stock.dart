@@ -237,6 +237,10 @@ class OpportunitiesDashboard {
   final String explanation;
   final String noSignalReason;
   final ScannerStageCounts debug;
+  final String apiStatus;
+  final bool isRefreshing;
+  final bool partialData;
+  final bool cacheHit;
 
   const OpportunitiesDashboard({
     required this.marketStatus,
@@ -245,7 +249,17 @@ class OpportunitiesDashboard {
     required this.explanation,
     required this.noSignalReason,
     required this.debug,
+    this.apiStatus = 'OK',
+    this.isRefreshing = false,
+    this.partialData = false,
+    this.cacheHit = false,
   });
+
+  bool get isSoftEmpty =>
+      apiStatus == 'NO_OPPORTUNITIES' ||
+      apiStatus == 'REFRESHING' ||
+      apiStatus == 'PARTIAL_DATA' ||
+      apiStatus == 'DATA_STALE';
 
   factory OpportunitiesDashboard.fromJson(Map<String, dynamic> json) {
     final live = json['opportunities'] as List<dynamic>? ?? [];
@@ -261,6 +275,10 @@ class OpportunitiesDashboard {
       explanation: json['explanation'] as String? ?? '',
       noSignalReason: json['no_signal_reason'] as String? ?? '',
       debug: ScannerStageCounts.fromJson(json['debug'] as Map<String, dynamic>?),
+      apiStatus: json['api_status'] as String? ?? 'OK',
+      isRefreshing: json['is_refreshing'] as bool? ?? false,
+      partialData: json['partial_data'] as bool? ?? false,
+      cacheHit: json['cache_hit'] as bool? ?? false,
     );
   }
 

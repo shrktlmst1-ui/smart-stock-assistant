@@ -109,15 +109,18 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool backgroundRefresh = false}) async {
     setState(() {
-      _loading = true;
-      _error = null;
+      _loading = _dashboard == null;
+      if (_dashboard == null) _error = null;
       _pulseState = PulseServiceState.loading;
     });
     try {
       final data = context.read<AppState>().stockData;
-      final dashboard = await data.getOpportunitiesDashboard(limit: 20);
+      final dashboard = await data.getOpportunitiesDashboard(
+        limit: 20,
+        backgroundRefresh: backgroundRefresh,
+      );
       var pulseList = const MarketPulseListResponse(enabled: false, alerts: [], count: 0);
       var pulseHealth = const MarketPulseHealth(
         enabled: false,
@@ -149,10 +152,18 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _dashboard = null;
-          _loading = false;
-          _error = _friendlyError(e);
-          _pulseState = PulseServiceState.error;
+          if (_dashboard != null && _dashboard!.isSoftEmpty) {
+            _loading = false;
+            _error = null;
+          } else if (_dashboard != null) {
+            _loading = false;
+            _error = null;
+          } else {
+            _dashboard = null;
+            _loading = false;
+            _error = _friendlyError(e);
+            _pulseState = PulseServiceState.error;
+          }
         });
       }
     }
@@ -329,7 +340,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    if (_error != null) {
+    if (_error != null && _dashboard == null) {
       return Card(
         color: AppTheme.danger.withOpacity(0.12),
         child: Padding(
@@ -441,7 +452,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: _load,
+        onRefresh: () => _load(backgroundRefresh: true),
         color: AppTheme.primary,
         child: ListView(
           padding: const EdgeInsets.all(16),

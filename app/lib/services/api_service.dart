@@ -69,8 +69,15 @@ class ApiService {
     return dashboard.displayItems;
   }
 
-  Future<OpportunitiesDashboard> fetchOpportunitiesDashboard({int limit = 20}) async {
-    final response = await _get('/stocks/opportunities?limit=$limit');
+  Future<OpportunitiesDashboard> fetchOpportunitiesDashboard({
+    int limit = 20,
+    bool backgroundRefresh = false,
+  }) async {
+    final refreshParam = backgroundRefresh ? '&background_refresh=true' : '';
+    final response = await _get(
+      '/stocks/opportunities?limit=$limit$refreshParam',
+      timeout: const Duration(seconds: 12),
+    );
     if (response.statusCode == 401) {
       throw Exception('انتهت الجلسة — سجّل الدخول مجددًا');
     }

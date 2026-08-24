@@ -138,6 +138,17 @@ class MarketStream:
                 except Exception as exc:
                     logger.debug("Live/extended engine sync skipped: %s", type(exc).__name__)
 
+                try:
+                    from services.snapshot_cache_service import schedule_opportunities_refresh
+
+                    schedule_opportunities_refresh(
+                        session=state.market_status,
+                        state=state,
+                        snapshot_raw=market_scanner._snapshot_raw,
+                    )
+                except Exception as exc:
+                    logger.debug("Opportunities snapshot refresh skipped: %s", type(exc).__name__)
+
                 if self.last_tick_ms > 30000:
                     logger.warning("Scanner tick slow: %.0fms (pool=%d)", self.last_tick_ms, state.candidate_pool)
             except Exception as e:

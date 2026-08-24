@@ -15,6 +15,7 @@ from services.best_opportunities_service import (
     build_premarket_opportunities_response,
     get_best_opportunities_premarket,
     premarket_to_stock_opportunity,
+    build_opportunities_from_scans,
 )
 
 
@@ -206,32 +207,52 @@ def test_opportunities_endpoint_shows_premarket_confirmed(client: TestClient, au
         top_opportunity=_confirmed_signal(),
     )
 
+    built = build_premarket_opportunities_response(scan, limit=20, state=mock_state, session="PRE_MARKET")
+    import time
+    from services import snapshot_cache_service as scs
+
+    scs._cached = scs.CachedOpportunities(
+        response=built,
+        generated_mono=time.monotonic(),
+        generated_at_iso="2026-01-01T00:00:00Z",
+        scan_id="test",
+        session="PRE_MARKET",
+    )
+
     with patch("main.market_scanner.get_state", return_value=mock_state):
         with patch("services.best_opportunities_service.sync_pre_move_scan") as mock_prem:
-            from models.pre_move import PreMoveScanResult
-            mock_prem.return_value = PreMoveScanResult()
             with patch(
                 "services.best_opportunities_service.sync_premarket_scanner",
-                return_value=scan,
-            ):
+            ) as mock_pm:
                 resp = client.get("/stocks/opportunities?limit=20", headers=auth_headers)
 
     assert resp.status_code == 200
     body = resp.json()
+    mock_prem.assert_not_called()
+    mock_pm.assert_not_called()
     assert len(body["opportunities"]) == 1
     assert body["opportunities"][0]["symbol"] == "PMI"
     assert body["opportunities"][0]["ai_signal"] == "CONFIRMED_ENTRY"
+    assert body.get("cache_hit") is True
 
 
-def test_get_best_opportunities_premarket_invokes_scanner():
-    with patch(
-        "services.best_opportunities_service.sync_pre_move_scan",
-        return_value=__import__("models.pre_move", fromlist=["PreMoveScanResult"]).PreMoveScanResult(message="empty"),
-    ) as mock_scan:
-        with patch(
-            "services.best_opportunities_service.sync_premarket_scanner",
-            return_value=PremarketScanResult(message="empty"),
-        ):
+def test_get_best_opportunities_premarket_uses_cache_not_sync_scan():
+    import time
+    from services import snapshot_cache_service as scs
+    from services.best_opportunities_service import build_premarket_opportunities_response
+
+    scan = PremarketScanResult(message="empty")
+    built = build_premarket_opportunities_response(scan, limit=5, state=None, session="PRE_MARKET")
+    scs._cached = scs.CachedOpportunities(
+        response=built,
+        generated_mono=time.monotonic(),
+        generated_at_iso="t",
+        scan_id="t",
+        session="PRE_MARKET",
+    )
+    with patch("services.best_opportunities_service.sync_pre_move_scan") as mock_scan:
+        with patch("services.best_opportunities_service.sync_premarket_scanner"):
             resp = get_best_opportunities_premarket(limit=5, state=None)
-    mock_scan.assert_called_once()
+    mock_scan.assert_not_called()
     assert resp.opportunities == []
+    assert resp.cache_hit is True

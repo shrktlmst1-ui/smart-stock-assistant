@@ -137,3 +137,17 @@ class OpportunitiesResponse(BaseModel):
     explanation: str = ""
     no_signal_reason: str = ""
     debug: ScannerStageCounts | None = None
+    # Snapshot metadata — API returns immediately from cache
+    api_status: str = "OK"
+    generated_at: str = ""
+    data_timestamp: str = ""
+    data_age_seconds: float = 0.0
+    scan_id: str = ""
+    session: str = ""
+    symbols_scanned: int = 0
+    candidates_count: int = 0
+    deep_analysis_count: int = 0
+    is_refreshing: bool = False
+    partial_data: bool = False
+    failed_symbols_count: int = 0
+    cache_hit: bool = False

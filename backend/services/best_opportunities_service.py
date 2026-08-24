@@ -6,13 +6,16 @@ import logging
 
 from analysis.pre_move_scorer import status_rank
 from analysis.pre_move_stage_progression import stage_rank_for_sort
-from models.pre_move import PreMoveSignal
+from models.pre_move import PreMoveScanResult, PreMoveSignal
 from models.premarket_opportunity import PremarketOpportunitySignal, PremarketScanResult
 from models.scanner import MarketScanState, OpportunitiesResponse
 from models.stock import StockOpportunity
 from services.market_session import session_explanation
-from services.pre_move_predictor_service import sync_pre_move_scan
-from services.premarket_opportunity_scanner import sync_premarket_scanner
+from services.pre_move_predictor_service import get_last_pre_move_scan, sync_pre_move_scan
+from services.premarket_opportunity_scanner import (
+    get_last_premarket_scan,
+    sync_premarket_scanner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,16 +213,15 @@ def build_premarket_opportunities_response(
     )
 
 
-def build_best_opportunities_response(
+def build_opportunities_from_scans(
+    pre_move: PreMoveScanResult,
+    premarket: PremarketScanResult,
     *,
     limit: int = 20,
     state: MarketScanState | None = None,
     session: str = "PRE_MARKET",
-    snapshot_raw: dict | None = None,
 ) -> OpportunitiesResponse:
-    pre_move = sync_pre_move_scan(snapshot_raw)
-    premarket = sync_premarket_scanner(snapshot_raw) if session == "PRE_MARKET" else PremarketScanResult()
-
+    """Merge cached scan results — no Polygon calls."""
     opportunities = _merge_opportunities(
         pre_move.signals,
         premarket.opportunities,
@@ -227,16 +229,7 @@ def build_best_opportunities_response(
         state=state,
     )
 
-    logger.info(
-        "BEST_OPPORTUNITIES source=PREMOVE_SCANNER count=%d premarket=%d session=%s",
-        len(opportunities),
-        len(premarket.opportunities),
-        session,
-    )
-
     message = premarket.message if premarket.opportunities else pre_move.message
-    if not opportunities:
-        logger.info("BEST_OPPORTUNITIES source=PREMOVE_SCANNER count=0 (no legacy fallback)")
 
     return OpportunitiesResponse(
         market_status=session,  # type: ignore[arg-type]
@@ -252,18 +245,87 @@ def build_best_opportunities_response(
     )
 
 
+def run_opportunities_scans(
+    snapshot_raw: dict | None,
+    session: str,
+) -> tuple[PreMoveScanResult, PremarketScanResult, bool, int]:
+    """Run Pre-Move + Premarket scans (background only). Returns (pre_move, premarket, partial, failed)."""
+    import time
+
+    from services.perf_utils import perf_timer
+
+    partial = False
+    failed = 0
+
+    with perf_timer("fast_scan", session=session):
+        t0 = time.monotonic()
+        try:
+            pre_move = sync_pre_move_scan(snapshot_raw)
+        except Exception as exc:
+            logger.warning("Pre-Move scan failed: %s", type(exc).__name__)
+            partial = True
+            failed += 1
+            cached = get_last_pre_move_scan()
+            pre_move = cached if cached is not None else PreMoveScanResult(message="scan failed")
+
+        if session == "PRE_MARKET":
+            try:
+                premarket = sync_premarket_scanner(snapshot_raw)
+            except Exception as exc:
+                logger.warning("Premarket scan failed: %s", type(exc).__name__)
+                partial = True
+                failed += 1
+                cached_pm = get_last_premarket_scan()
+                premarket = cached_pm or PremarketScanResult()
+        else:
+            premarket = PremarketScanResult()
+
+        fast_ms = (time.monotonic() - t0) * 1000
+        logger.info(
+            "[PERF] fast_scan_ms=%.0f deep_scan_ms=%.0f scanned=%d candidates=%d deep=%d",
+            fast_ms,
+            pre_move.stats.deep_duration_ms,
+            pre_move.stats.scanned,
+            pre_move.stats.early_candidates,
+            pre_move.stats.deep_analyzed,
+        )
+
+    return pre_move, premarket, partial, failed
+
+
+def build_best_opportunities_response(
+    *,
+    limit: int = 20,
+    state: MarketScanState | None = None,
+    session: str = "PRE_MARKET",
+    snapshot_raw: dict | None = None,
+) -> OpportunitiesResponse:
+    """Full synchronous path — tests and forced refresh only."""
+    pre_move, premarket, _, _ = run_opportunities_scans(snapshot_raw, session)
+    response = build_opportunities_from_scans(
+        pre_move, premarket, limit=limit, state=state, session=session,
+    )
+    logger.info(
+        "BEST_OPPORTUNITIES source=PREMOVE_SCANNER count=%d premarket=%d session=%s",
+        len(response.opportunities),
+        len(premarket.opportunities),
+        session,
+    )
+    return response
+
+
 def get_best_opportunities_premarket(
     *,
     limit: int = 20,
     state: MarketScanState | None = None,
 ) -> OpportunitiesResponse:
     from services.market_scanner_service import market_scanner
+    from services.snapshot_cache_service import get_opportunities_response
 
     session = state.market_status if state and state.market_status else "PRE_MARKET"
-    raw = market_scanner._snapshot_raw
-    return build_best_opportunities_response(
+    return get_opportunities_response(
         limit=limit,
         state=state,
         session=session,
-        snapshot_raw=raw,
+        trigger_refresh=True,
     )

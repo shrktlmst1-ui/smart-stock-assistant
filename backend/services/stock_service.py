@@ -16,7 +16,10 @@ from config import (
     DAILY_BARS_REFRESH_SECONDS,
     MINUTE_BARS_REFRESH_SECONDS,
     NEWS_REFRESH_SECONDS,
+    PER_SYMBOL_PREP_TIMEOUT_SEC,
     SCANNER_WORKER_THREADS,
+    SYMBOL_CACHE_MAX_ENTRIES,
+    TICKER_META_CACHE_MAX_ENTRIES,
 )
 from database.signal_logger import log_signal
 from models.alerts import StockStatus
@@ -206,18 +209,56 @@ async def _get_name(symbol: str, client: PolygonClient) -> str:
 async def _get_ticker_meta(symbol: str, client: PolygonClient) -> dict[str, str]:
     if symbol in _ticker_meta_cache:
         return _ticker_meta_cache[symbol]
+
+    from services.universe_manager import universe_manager
+
+    member = universe_manager.get_member(symbol)
+    if member and member.name and member.name.strip() and member.name.upper() != symbol:
+        meta = {"name": member.name.strip(), "sector": "", "industry": ""}
+        _store_ticker_meta(symbol, meta)
+        return meta
+
     try:
-        details = await client.get_ticker_details(symbol)
+        details = await asyncio.wait_for(
+            client.get_ticker_details(symbol),
+            timeout=PER_SYMBOL_PREP_TIMEOUT_SEC,
+        )
         meta = {
             "name": details.get("name", symbol),
             "sector": str(details.get("market", "") or ""),
             "industry": str(details.get("sic_description", "") or ""),
         }
+    except asyncio.TimeoutError:
+        logger.debug("Reference name timeout for %s — using symbol", symbol)
+        meta = {"name": symbol, "sector": "", "industry": ""}
     except Exception:
         meta = {"name": symbol, "sector": "", "industry": ""}
-    _ticker_meta_cache[symbol] = meta
-    _name_cache[symbol] = meta["name"]
+    _store_ticker_meta(symbol, meta)
     return meta
+
+
+def _store_ticker_meta(symbol: str, meta: dict[str, str]) -> None:
+    sym = symbol.upper()
+    _ticker_meta_cache[sym] = meta
+    _name_cache[sym] = meta["name"]
+    if len(_ticker_meta_cache) > TICKER_META_CACHE_MAX_ENTRIES:
+        for key in list(_ticker_meta_cache.keys())[: len(_ticker_meta_cache) - TICKER_META_CACHE_MAX_ENTRIES]:
+            _ticker_meta_cache.pop(key, None)
+
+
+def _trim_symbol_cache(active_symbols: set[str] | None = None) -> None:
+    if len(_symbol_cache) <= SYMBOL_CACHE_MAX_ENTRIES:
+        return
+    if active_symbols:
+        for key in list(_symbol_cache.keys()):
+            if key not in active_symbols:
+                del _symbol_cache[key]
+    if len(_symbol_cache) <= SYMBOL_CACHE_MAX_ENTRIES:
+        return
+    sorted_keys = sorted(_symbol_cache.keys(), key=lambda k: _symbol_cache[k].minute_updated)
+    overflow = len(_symbol_cache) - SYMBOL_CACHE_MAX_ENTRIES
+    for key in sorted_keys[:overflow]:
+        _symbol_cache.pop(key, None)
 
 
 def _analyze_batch_sync(jobs: list[tuple[str, SymbolCache, float, int, float, float, str]]) -> list[StockSnapshot | None]:
@@ -248,9 +289,17 @@ async def _prep_snapshot_job(
     price, volume, change, change_pct = _parse_snapshot_price(snap_data)
     if price <= 0:
         return None
-    await _ensure_bars(symbol, client, cache)
-    await _ensure_news(symbol, client, cache, change_pct)
-    name = await _get_name(symbol, client)
+    try:
+        async with asyncio.timeout(PER_SYMBOL_PREP_TIMEOUT_SEC):
+            await _ensure_bars(symbol, client, cache)
+            await _ensure_news(symbol, client, cache, change_pct)
+            name = await _get_name(symbol, client)
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning("Symbol prep timeout — skip %s", symbol)
+        return None
+    except Exception as exc:
+        logger.debug("Symbol prep failed %s: %s", symbol, type(exc).__name__)
+        return None
     return symbol, cache, price, volume, change, change_pct, name
 
 
@@ -286,31 +335,36 @@ async def build_stock_snapshot(
 
 
 async def build_snapshots_batch(symbols: list[str], client: PolygonClient | None = None) -> list[StockSnapshot]:
-    t0 = time.monotonic()
+    from services.perf_utils import cache_sizes, perf_timer
+
     client = client or get_client()
-    batch = await client.get_snapshots_batch(symbols)
+    with perf_timer(
+        "deep_batch",
+        symbols=len(symbols),
+        cache=cache_sizes(),
+    ):
+        batch = await client.get_snapshots_batch(symbols)
 
-    prep_tasks = [
-        _prep_snapshot_job(sym, client, batch)
-        for sym in symbols
-    ]
-    prepared = await asyncio.gather(*prep_tasks)
-    jobs = [job for job in prepared if job is not None]
+        prep_tasks = [
+            _prep_snapshot_job(sym, client, batch)
+            for sym in symbols
+        ]
+        prepared = await asyncio.gather(*prep_tasks)
+        jobs = [job for job in prepared if job is not None]
+        skipped = len(symbols) - len(jobs)
 
-    snapshots = await asyncio.to_thread(_analyze_batch_sync, jobs)
+        snapshots = await asyncio.to_thread(_analyze_batch_sync, jobs)
 
-    results: list[StockSnapshot] = []
-    for snap in snapshots:
-        if snap is None:
-            continue
-        results.append(snap)
-        await notify_signal(snap.symbol, snap.ai_signal, snap.price, snap.trade_decision)
+        results: list[StockSnapshot] = []
+        for snap in snapshots:
+            if snap is None:
+                continue
+            results.append(snap)
+            await notify_signal(snap.symbol, snap.ai_signal, snap.price, snap.trade_decision)
 
-    elapsed_ms = (time.monotonic() - t0) * 1000
-    if elapsed_ms > 300:
-        logger.warning("Batch %d symbols slow: %.0fms", len(symbols), elapsed_ms)
-    else:
-        logger.debug("Batch %d symbols in %.0fms", len(symbols), elapsed_ms)
+        _trim_symbol_cache(set(symbols))
+        if skipped:
+            logger.info("[PERF] batch_skipped=%d analyzed=%d", skipped, len(results))
     return results
 
 

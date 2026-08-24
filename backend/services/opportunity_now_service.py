@@ -20,7 +20,7 @@ from services.live_confirmation_engine import (
 )
 from services.market_scanner_service import market_scanner
 from services.market_session import get_us_market_session, is_regular_session, session_explanation
-from services.premarket_opportunity_scanner import sync_premarket_scanner
+from services.premarket_opportunity_scanner import get_last_premarket_scan
 from services.opportunity_now_scoring import (
     SIGNAL_TTL_SECONDS,
     _snapshot_to_signal,
@@ -308,7 +308,9 @@ def get_opportunity_now() -> OpportunityNowResponse:
 
         premarket_scan: PremarketScanResult | None = None
         if session == "PRE_MARKET":
-            premarket_scan = sync_premarket_scanner()
+            from services.premarket_opportunity_scanner import get_last_premarket_scan
+
+            premarket_scan = get_last_premarket_scan()
 
         best = live_confirmation_engine.best_candidate(market_open=market_open)
         signals: list[OpportunityNowSignal] = []

@@ -14,8 +14,14 @@ class StockDataService {
 
   ApiService get api => _api;
 
-  Future<OpportunitiesDashboard> getOpportunitiesDashboard({int limit = 20}) async {
-    return _api.fetchOpportunitiesDashboard(limit: limit);
+  Future<OpportunitiesDashboard> getOpportunitiesDashboard({
+    int limit = 20,
+    bool backgroundRefresh = false,
+  }) async {
+    return _api.fetchOpportunitiesDashboard(
+      limit: limit,
+      backgroundRefresh: backgroundRefresh,
+    );
   }
 
   Future<List<StockOpportunity>> getOpportunities({int limit = 20}) async {

@@ -96,6 +96,10 @@ async def _fetch_bars(client, symbol: str, session: str) -> pd.DataFrame:
     else:
         df = await client.get_premarket_minute_bars(symbol)
     _bar_cache[key] = (time.monotonic(), df)
+    if len(_bar_cache) > 200:
+        oldest = sorted(_bar_cache.items(), key=lambda x: x[1][0])[:50]
+        for k, _ in oldest:
+            _bar_cache.pop(k, None)
     return df
 
 
@@ -145,7 +149,7 @@ def _fast_filter(snapshot_raw: dict[str, dict], limit: int) -> list[dict[str, An
 
 
 async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSignal | None:
-    from services.polygon_client import PolygonClient
+    from services.stock_service import get_client
 
     sym = candidate["symbol"]
     price = candidate["price"]
@@ -153,29 +157,34 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
     item = candidate["item"]
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    client = PolygonClient()
+    client = get_client()
     try:
-        bars = await _fetch_bars(client, sym, session)
-        nbbo: dict = {}
-        try:
-            nbbo = await client.get_last_nbbo(sym)
-        except Exception:
-            pass
-        prior_bars: pd.DataFrame | None = None
-        try:
-            from datetime import timedelta
-            prior_date = (datetime.now(ET) - timedelta(days=1)).strftime("%Y-%m-%d")
-            prior_bars = await client.get_minute_bars_on_date(sym, prior_date)
-        except Exception:
-            prior_bars = None
-        news_items: list[NewsItem] = []
-        try:
-            from services.news_service import fetch_stock_news
-            news_items = await fetch_stock_news(client, sym, limit=5)
-        except Exception:
-            news_items = []
-    finally:
-        await client.close()
+        async with asyncio.timeout(20):
+            bars = await _fetch_bars(client, sym, session)
+            nbbo: dict = {}
+            try:
+                nbbo = await client.get_last_nbbo(sym)
+            except Exception:
+                pass
+            prior_bars: pd.DataFrame | None = None
+            try:
+                from datetime import timedelta
+                prior_date = (datetime.now(ET) - timedelta(days=1)).strftime("%Y-%m-%d")
+                prior_bars = await client.get_minute_bars_on_date(sym, prior_date)
+            except Exception:
+                prior_bars = None
+            news_items: list[NewsItem] = []
+            try:
+                from services.news_service import fetch_stock_news
+                news_items = await fetch_stock_news(client, sym, limit=5)
+            except Exception:
+                news_items = []
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.debug("[PREMOVE] %s deep analyze timeout — skip", sym)
+        return None
+    except Exception as exc:
+        logger.debug("[PREMOVE] %s analyze failed: %s", sym, type(exc).__name__)
+        return None
 
     if bars.empty or len(bars) < PREMOVE_MIN_ANALYSIS_BARS:
         return PreMoveSignal(
