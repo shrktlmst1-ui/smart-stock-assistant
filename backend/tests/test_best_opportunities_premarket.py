@@ -18,14 +18,14 @@ from services.best_opportunities_service import (
 )
 
 
-def _opp_signal(**kwargs) -> PremarketOpportunitySignal:
+def _confirmed_signal(**kwargs) -> PremarketOpportunitySignal:
     defaults = dict(
         symbol="PMI",
         current_price=4.91,
         premarket_change_percent=45.0,
         premarket_volume=3_400_000,
         trigger_type="LONG_BREAKOUT",
-        status="OPPORTUNITY",
+        status="CONFIRMED_ENTRY",
         entry=4.91,
         stop_loss=4.68,
         tp1=5.20,
@@ -41,13 +41,34 @@ def _opp_signal(**kwargs) -> PremarketOpportunitySignal:
     return PremarketOpportunitySignal(**defaults)
 
 
+def _early_signal(**kwargs) -> PremarketOpportunitySignal:
+    defaults = dict(
+        symbol="PMI",
+        current_price=4.69,
+        premarket_change_percent=46.0,
+        premarket_volume=3_400_000,
+        trigger_type="EARLY_MOMENTUM",
+        status="EARLY_MOMENTUM",
+        early_entry_zone=4.69,
+        invalidation_level=4.50,
+        vwap=4.75,
+        premarket_high=5.11,
+        distance_to_premarket_high=8.2,
+        spread_percent=0.8,
+        volume_acceleration=1.4,
+        relative_volume=1.5,
+        reason="تسارع مبكر في السعر والسيولة + Gap قوي + حجم مرتفع + اقتراب من VWAP/القمة",
+    )
+    defaults.update(kwargs)
+    return PremarketOpportunitySignal(**defaults)
+
+
 def _watch_signal(**kwargs) -> PremarketOpportunitySignal:
     defaults = dict(
         symbol="PMI",
         current_price=4.69,
         premarket_change_percent=46.0,
         premarket_volume=3_400_000,
-        trigger_type="",
         status="WATCH",
         reason="Price has not broken premarket high",
     )
@@ -55,19 +76,38 @@ def _watch_signal(**kwargs) -> PremarketOpportunitySignal:
     return PremarketOpportunitySignal(**defaults)
 
 
-def test_premarket_response_includes_only_opportunity_status():
+def test_premarket_response_includes_confirmed_and_early():
     scan = PremarketScanResult(
-        status="OPPORTUNITY",
-        opportunities=[_opp_signal(), _watch_signal(symbol="BFLY", status="WATCH")],
+        status="CONFIRMED_ENTRY",
+        opportunities=[_confirmed_signal(), _early_signal(symbol="EARLY1")],
         watches=[_watch_signal()],
-        top_opportunity=_opp_signal(),
+        top_opportunity=_confirmed_signal(),
+        top_early=_early_signal(symbol="EARLY1"),
     )
     resp = build_premarket_opportunities_response(scan, limit=20)
+    assert len(resp.opportunities) == 2
+    symbols = {o.symbol for o in resp.opportunities}
+    assert symbols == {"PMI", "EARLY1"}
+    confirmed = next(o for o in resp.opportunities if o.symbol == "PMI")
+    assert confirmed.status == "شراء"
+    assert "دخول: 4.91" in confirmed.status_reason_ar
+    early = next(o for o in resp.opportunities if o.symbol == "EARLY1")
+    assert early.status == "انتظار"
+    assert early.ai_signal == "EARLY_MOMENTUM"
+    assert resp.watchlist_candidates == []
+
+
+def test_premarket_shows_early_momentum_without_confirmed():
+    scan = PremarketScanResult(
+        status="EARLY_MOMENTUM",
+        opportunities=[_early_signal()],
+        top_early=_early_signal(),
+    )
+    resp = build_premarket_opportunities_response(scan)
     assert len(resp.opportunities) == 1
     assert resp.opportunities[0].symbol == "PMI"
-    assert resp.opportunities[0].score == 0
-    assert "دخول: 4.91" in resp.opportunities[0].status_reason_ar
-    assert resp.watchlist_candidates == []
+    assert resp.opportunities[0].ai_signal == "EARLY_MOMENTUM"
+    assert "منطقة مبكرة" in resp.opportunities[0].status_reason_ar
 
 
 def test_premarket_empty_state_no_legacy_fallback():
@@ -83,14 +123,14 @@ def test_premarket_empty_state_no_legacy_fallback():
     assert PREMARKET_EMPTY_SUB in resp.no_signal_reason
 
 
-def test_premarket_to_stock_opportunity_fields():
-    pm = _opp_signal()
+def test_premarket_to_stock_opportunity_confirmed_fields():
+    pm = _confirmed_signal()
     opp = premarket_to_stock_opportunity(pm, name="Picard Medical")
     assert opp.symbol == "PMI"
     assert opp.name == "Picard Medical"
     assert opp.price == 4.91
     assert opp.change_percent == 45.0
-    assert opp.ai_signal == "LONG_BREAKOUT"
+    assert opp.ai_signal == "CONFIRMED_ENTRY"
     assert "R:R: 2.1" in opp.status_reason_ar
 
 
@@ -145,7 +185,7 @@ def test_opportunities_endpoint_uses_premarket_scanner_during_premarket(
     assert "BDTX" not in symbols
 
 
-def test_opportunities_endpoint_shows_premarket_trigger(client: TestClient, auth_headers: dict):
+def test_opportunities_endpoint_shows_premarket_confirmed(client: TestClient, auth_headers: dict):
     mock_state = SimpleNamespace(
         market_status="PRE_MARKET",
         top_opportunities=[],
@@ -156,9 +196,9 @@ def test_opportunities_endpoint_shows_premarket_trigger(client: TestClient, auth
         debug=None,
     )
     scan = PremarketScanResult(
-        status="OPPORTUNITY",
-        opportunities=[_opp_signal()],
-        top_opportunity=_opp_signal(),
+        status="CONFIRMED_ENTRY",
+        opportunities=[_confirmed_signal()],
+        top_opportunity=_confirmed_signal(),
     )
 
     with patch("main.market_scanner.get_state", return_value=mock_state):
@@ -172,7 +212,7 @@ def test_opportunities_endpoint_shows_premarket_trigger(client: TestClient, auth
     body = resp.json()
     assert len(body["opportunities"]) == 1
     assert body["opportunities"][0]["symbol"] == "PMI"
-    assert body["opportunities"][0]["ai_signal"] == "LONG_BREAKOUT"
+    assert body["opportunities"][0]["ai_signal"] == "CONFIRMED_ENTRY"
 
 
 def test_get_best_opportunities_premarket_invokes_scanner():

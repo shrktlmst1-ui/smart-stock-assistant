@@ -36,6 +36,17 @@ DEEP_SCAN_TOP_N = 40
 BAR_CACHE_TTL = 60
 WEAK_VOLUME_RVOL = 0.5
 
+# EARLY_MOMENTUM thresholds
+EARLY_MIN_CHANGE_PCT = 8.0
+EARLY_MIN_VOLUME = 150_000
+EARLY_VOL_ACCEL = 1.2
+EARLY_MAX_SPREAD = 3.0
+EARLY_MIN_RVOL = 1.0
+EARLY_VWAP_BELOW_PCT = 2.0
+EARLY_VWAP_ABOVE_PCT = 5.0
+EARLY_MAX_COLLAPSE_FROM_HIGH_PCT = 15.0
+EARLY_STRONG_GAP_PCT = 20.0
+
 ExclusionReason = Literal[
     "LOW_VOLUME",
     "NO_BREAKOUT",
@@ -256,8 +267,8 @@ def _fix_nbbo_parse(m: PremarketMetrics, nbbo: dict) -> None:
 
 def _levels(m: PremarketMetrics, trigger: str) -> tuple[float, float, float, float, float]:
     entry = m.current_price
-    if trigger == "LONG_BREAKOUT":
-        stop = round(min(m.premarket_high * 0.985, m.vwap * 0.995, m.premarket_low), 4)
+    if trigger in ("LONG_BREAKOUT", "LONG_PULLBACK"):
+        stop = round(min(m.premarket_high * 0.985, m.vwap * 0.995, m.premarket_low), 4) if trigger == "LONG_BREAKOUT" else round(min(m.swing_low * 0.99, m.vwap * 0.985), 4)
     else:
         stop = round(min(m.swing_low * 0.99, m.vwap * 0.985), 4)
     risk = max(entry - stop, entry * 0.02)
@@ -265,6 +276,66 @@ def _levels(m: PremarketMetrics, trigger: str) -> tuple[float, float, float, flo
     tp2 = round(entry + risk * 2.5, 4)
     rr = round((tp1 - entry) / risk, 2) if risk > 0 else 0.0
     return entry, stop, tp1, tp2, rr
+
+
+def _early_levels(m: PremarketMetrics) -> tuple[float, float]:
+    entry_zone = round(m.current_price, 4)
+    invalidation = round(min(m.vwap * 0.97, m.swing_low * 0.99, m.premarket_low), 4)
+    return entry_zone, invalidation
+
+
+def _evaluate_early_momentum(m: PremarketMetrics) -> tuple[bool, str, ExclusionReason | None]:
+    """Majority of early-capture conditions — no PM high break required."""
+    if m.current_price < MIN_PRICE or m.current_price > MAX_PRICE:
+        return False, "Price out of range", "PRICE_OUT_OF_RANGE"
+    if m.premarket_change_percent < EARLY_MIN_CHANGE_PCT:
+        return False, f"Change {m.premarket_change_percent}% < {EARLY_MIN_CHANGE_PCT}%", "NO_BREAKOUT"
+    if m.premarket_volume < EARLY_MIN_VOLUME:
+        return False, "Volume too low for early momentum", "LOW_VOLUME"
+
+    soft: list[bool] = []
+    soft.append(m.relative_volume >= EARLY_MIN_RVOL)
+    soft.append(
+        m.volume_acceleration >= EARLY_VOL_ACCEL
+        or m.premarket_change_percent >= EARLY_STRONG_GAP_PCT
+    )
+    soft.append(m.spread_percent <= EARLY_MAX_SPREAD)
+
+    if m.vwap > 0:
+        vwap_dist = (m.current_price - m.vwap) / m.vwap * 100.0
+        soft.append(vwap_dist >= -EARLY_VWAP_BELOW_PCT and vwap_dist <= EARLY_VWAP_ABOVE_PCT)
+    else:
+        soft.append(True)
+
+    soft.append(
+        m.momentum_acceleration > 0
+        or m.volume_acceleration >= EARLY_VOL_ACCEL
+        or m.premarket_change_percent >= EARLY_STRONG_GAP_PCT
+    )
+
+    if m.premarket_high > 0:
+        soft.append(m.distance_from_premarket_high_pct <= EARLY_MAX_COLLAPSE_FROM_HIGH_PCT)
+    else:
+        soft.append(True)
+
+    passed = sum(soft)
+    needed = max(4, len(soft) - 1)
+    if passed >= needed:
+        return (
+            True,
+            "تسارع مبكر في السعر والسيولة + Gap قوي + حجم مرتفع + اقتراب من VWAP/القمة",
+            None,
+        )
+
+    if not soft[0]:
+        return False, f"RVOL {m.relative_volume} below elevated threshold", "LOW_VOLUME"
+    if not soft[1]:
+        return False, "Insufficient volume acceleration for early momentum", "NO_VOLUME_ACCELERATION"
+    if m.vwap > 0 and not soft[3]:
+        return False, "Too far from VWAP", "BELOW_VWAP"
+    if m.premarket_high > 0 and not soft[5]:
+        return False, "Clear collapse from premarket high", "NO_BREAKOUT"
+    return False, "Early momentum soft conditions not met", "NO_BREAKOUT"
 
 
 def _evaluate_long_breakout(m: PremarketMetrics) -> tuple[bool, str, ExclusionReason | None]:
@@ -316,7 +387,7 @@ def _evaluate_long_pullback(m: PremarketMetrics) -> tuple[bool, str, ExclusionRe
     return True, "Pullback to VWAP/support with volume bounce", None
 
 
-def _metrics_to_signal(m: PremarketMetrics, trigger: str, reason: str, status: str) -> PremarketOpportunitySignal:
+def _metrics_to_confirmed_signal(m: PremarketMetrics, trigger: str, reason: str) -> PremarketOpportunitySignal:
     entry, stop, tp1, tp2, rr = _levels(m, trigger)
     return PremarketOpportunitySignal(
         symbol=m.symbol,
@@ -324,7 +395,7 @@ def _metrics_to_signal(m: PremarketMetrics, trigger: str, reason: str, status: s
         premarket_change_percent=m.premarket_change_percent,
         premarket_volume=m.premarket_volume,
         trigger_type=trigger,  # type: ignore[arg-type]
-        status=status,  # type: ignore[arg-type]
+        status="CONFIRMED_ENTRY",
         entry=entry,
         stop_loss=stop,
         tp1=tp1,
@@ -339,6 +410,7 @@ def _metrics_to_signal(m: PremarketMetrics, trigger: str, reason: str, status: s
         volume_5m=m.volume_5m,
         relative_volume=m.relative_volume,
         distance_from_premarket_high_pct=m.distance_from_premarket_high_pct,
+        distance_to_premarket_high=m.distance_from_premarket_high_pct,
         momentum_acceleration=m.momentum_acceleration,
         bid=m.bid,
         ask=m.ask,
@@ -346,38 +418,119 @@ def _metrics_to_signal(m: PremarketMetrics, trigger: str, reason: str, status: s
     )
 
 
-def _evaluate_triggers(m: PremarketMetrics) -> tuple[PremarketOpportunitySignal | None, PremarketOpportunitySignal | None, ExclusionReason | None]:
-    """Returns (opportunity, watch, exclusion_reason_if_watch_only)."""
+def _metrics_to_early_signal(m: PremarketMetrics, reason: str) -> PremarketOpportunitySignal:
+    entry_zone, invalidation = _early_levels(m)
+    return PremarketOpportunitySignal(
+        symbol=m.symbol,
+        current_price=m.current_price,
+        premarket_change_percent=m.premarket_change_percent,
+        premarket_volume=m.premarket_volume,
+        trigger_type="EARLY_MOMENTUM",
+        status="EARLY_MOMENTUM",
+        early_entry_zone=entry_zone,
+        invalidation_level=invalidation,
+        vwap=m.vwap,
+        premarket_high=m.premarket_high,
+        premarket_low=m.premarket_low,
+        spread_percent=m.spread_percent,
+        volume_acceleration=m.volume_acceleration,
+        volume_1m=m.volume_1m,
+        volume_5m=m.volume_5m,
+        relative_volume=m.relative_volume,
+        distance_from_premarket_high_pct=m.distance_from_premarket_high_pct,
+        distance_to_premarket_high=m.distance_from_premarket_high_pct,
+        momentum_acceleration=m.momentum_acceleration,
+        bid=m.bid,
+        ask=m.ask,
+        reason=reason,
+    )
+
+
+def _metrics_to_watch_signal(m: PremarketMetrics, reason: str) -> PremarketOpportunitySignal:
+    return PremarketOpportunitySignal(
+        symbol=m.symbol,
+        current_price=m.current_price,
+        premarket_change_percent=m.premarket_change_percent,
+        premarket_volume=m.premarket_volume,
+        status="WATCH",
+        vwap=m.vwap,
+        premarket_high=m.premarket_high,
+        premarket_low=m.premarket_low,
+        spread_percent=m.spread_percent,
+        volume_acceleration=m.volume_acceleration,
+        volume_1m=m.volume_1m,
+        volume_5m=m.volume_5m,
+        relative_volume=m.relative_volume,
+        distance_from_premarket_high_pct=m.distance_from_premarket_high_pct,
+        distance_to_premarket_high=m.distance_from_premarket_high_pct,
+        momentum_acceleration=m.momentum_acceleration,
+        bid=m.bid,
+        ask=m.ask,
+        reason=reason,
+    )
+
+
+def _metrics_to_signal(m: PremarketMetrics, trigger: str, reason: str, status: str) -> PremarketOpportunitySignal:
+    if status == "CONFIRMED_ENTRY":
+        return _metrics_to_confirmed_signal(m, trigger, reason)
+    if status == "EARLY_MOMENTUM":
+        return _metrics_to_early_signal(m, reason)
+    return _metrics_to_watch_signal(m, reason)
+
+
+def _evaluate_triggers(
+    m: PremarketMetrics,
+) -> tuple[
+    PremarketOpportunitySignal | None,
+    PremarketOpportunitySignal | None,
+    PremarketOpportunitySignal | None,
+    ExclusionReason | None,
+]:
+    """Returns (confirmed, early, watch, exclusion)."""
     if not m.trade_fresh:
         _log_exclusion(m.symbol, "STALE_DATA")
-        return None, None, "STALE_DATA"
+        return None, None, None, "STALE_DATA"
 
     ok_b, reason_b, ex_b = _evaluate_long_breakout(m)
     if ok_b:
-        opp = _metrics_to_signal(m, "LONG_BREAKOUT", reason_b, "OPPORTUNITY")
+        opp = _metrics_to_confirmed_signal(m, "LONG_BREAKOUT", reason_b)
         logger.info(
-            "PREMARKET_SCANNER symbol=%s status=OPPORTUNITY trigger=LONG_BREAKOUT "
+            "PREMARKET_SCANNER symbol=%s status=CONFIRMED_ENTRY trigger=LONG_BREAKOUT "
             "entry=%.4f stop=%.4f tp1=%.4f tp2=%.4f",
             m.symbol, opp.entry, opp.stop_loss, opp.tp1, opp.tp2,
         )
-        return opp, None, None
+        return opp, None, None, None
 
     ok_p, reason_p, ex_p = _evaluate_long_pullback(m)
     if ok_p:
-        opp = _metrics_to_signal(m, "LONG_PULLBACK", reason_p, "OPPORTUNITY")
+        opp = _metrics_to_confirmed_signal(m, "LONG_PULLBACK", reason_p)
         logger.info(
-            "PREMARKET_SCANNER symbol=%s status=OPPORTUNITY trigger=LONG_PULLBACK "
+            "PREMARKET_SCANNER symbol=%s status=CONFIRMED_ENTRY trigger=LONG_PULLBACK "
             "entry=%.4f stop=%.4f tp1=%.4f tp2=%.4f",
             m.symbol, opp.entry, opp.stop_loss, opp.tp1, opp.tp2,
         )
-        return opp, None, None
+        return opp, None, None, None
 
-    exclusion = ex_b or ex_p or "NO_BREAKOUT"
-    detail = reason_b if ex_b else reason_p
+    ok_e, reason_e, ex_e = _evaluate_early_momentum(m)
+    if ok_e:
+        early = _metrics_to_early_signal(m, reason_e)
+        logger.info(
+            "PREMARKET_SCANNER symbol=%s status=EARLY_MOMENTUM "
+            "entry_zone=%.4f invalidation=%.4f dist_high=%.2f%% vol_accel=%.2f",
+            m.symbol,
+            early.early_entry_zone,
+            early.invalidation_level,
+            early.distance_to_premarket_high,
+            early.volume_acceleration,
+        )
+        return None, early, None, None
+
+    exclusion = ex_b or ex_e or ex_p or "NO_BREAKOUT"
+    detail = reason_b if ex_b else (reason_e if ex_e else reason_p)
     _log_exclusion(m.symbol, exclusion, detail)
 
-    watch = _metrics_to_signal(m, "", detail or "Passes filter — awaiting trigger", "WATCH")
-    return None, watch, exclusion
+    watch = _metrics_to_watch_signal(m, detail or "Passes filter — awaiting trigger")
+    return None, None, watch, exclusion
 
 
 async def _fetch_bars_cached(client, symbol: str, session_date: str | None = None) -> pd.DataFrame:
@@ -438,6 +591,7 @@ async def scan_premarket_async(
     deep = candidates[:DEEP_SCAN_TOP_N]
 
     opportunities: list[PremarketOpportunitySignal] = []
+    early_list: list[PremarketOpportunitySignal] = []
     watches: list[PremarketOpportunitySignal] = []
 
     client = PolygonClient()
@@ -457,23 +611,32 @@ async def scan_premarket_async(
                 _log_exclusion(row.symbol, "LOW_VOLUME", f"enriched vol={metrics.premarket_volume}")
                 continue
 
-            opp, watch, _ = _evaluate_triggers(metrics)
-            if opp:
-                opportunities.append(opp)
+            confirmed, early, watch, _ = _evaluate_triggers(metrics)
+            if confirmed:
+                opportunities.append(confirmed)
+            elif early:
+                early_list.append(early)
             elif watch:
                 watches.append(watch)
     finally:
         await client.close()
 
-    opportunities.sort(key=lambda o: (o.trigger_type != "", o.premarket_change_percent), reverse=True)
+    opportunities.sort(key=lambda o: o.premarket_change_percent, reverse=True)
+    early_list.sort(key=lambda e: e.premarket_change_percent, reverse=True)
     watches.sort(key=lambda w: w.premarket_change_percent, reverse=True)
 
-    top_opp = opportunities[0] if opportunities else None
+    top_confirmed = opportunities[0] if opportunities else None
+    top_early = early_list[0] if early_list else None
     top_watch = watches[0] if watches else None
 
-    if top_opp:
-        status = "OPPORTUNITY"
-        message = f"{top_opp.symbol} — {top_opp.trigger_type}"
+    display = opportunities + early_list
+
+    if top_confirmed:
+        status = "CONFIRMED_ENTRY"
+        message = f"{top_confirmed.symbol} — دخول مؤكد ({top_confirmed.trigger_type})"
+    elif top_early:
+        status = "EARLY_MOMENTUM"
+        message = f"{top_early.symbol} — فرصة مبكرة"
     elif top_watch:
         status = "WATCH"
         message = f"{top_watch.symbol} — مراقبة قبل الافتتاح"
@@ -486,17 +649,18 @@ async def scan_premarket_async(
         message=message,
         scanned=scanned,
         filtered=len(candidates),
-        opportunities=opportunities,
+        opportunities=display,
         watches=watches,
-        top_opportunity=top_opp,
+        top_opportunity=top_confirmed,
+        top_early=top_early,
         top_watch=top_watch,
     )
     global _last_scan
     _last_scan = result
     logger.info(
-        "Premarket scan: scanned=%d filtered=%d opportunities=%d watches=%d top=%s",
-        scanned, len(candidates), len(opportunities), len(watches),
-        top_opp.symbol if top_opp else (top_watch.symbol if top_watch else "none"),
+        "Premarket scan: scanned=%d filtered=%d confirmed=%d early=%d watches=%d top=%s",
+        scanned, len(candidates), len(opportunities), len(early_list), len(watches),
+        top_confirmed.symbol if top_confirmed else (top_early.symbol if top_early else (top_watch.symbol if top_watch else "none")),
     )
     return result
 
@@ -588,13 +752,23 @@ async def diagnose_symbol(
 
     ok_b, reason_b, ex_b = _evaluate_long_breakout(m)
     ok_p, reason_p, ex_p = _evaluate_long_pullback(m)
+    ok_e, reason_e, ex_e = _evaluate_early_momentum(m)
     out["triggers"] = {
         "LONG_BREAKOUT": {"ok": ok_b, "reason": reason_b, "exclusion": ex_b},
         "LONG_PULLBACK": {"ok": ok_p, "reason": reason_p, "exclusion": ex_p},
+        "EARLY_MOMENTUM": {"ok": ok_e, "reason": reason_e, "exclusion": ex_e},
     }
+    if ok_b or ok_p:
+        out["status"] = "CONFIRMED_ENTRY"
+    elif ok_e:
+        out["status"] = "EARLY_MOMENTUM"
+    else:
+        out["status"] = "WATCH"
     if not ok_b and ex_b:
         out["exclusions"].append(ex_b)
     if not ok_p and ex_p and not ok_b:
         out["exclusions"].append(ex_p)
+    if not ok_e and ex_e and not ok_b and not ok_p:
+        out["exclusions"].append(ex_e)
 
     return out

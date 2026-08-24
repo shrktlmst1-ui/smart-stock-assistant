@@ -18,16 +18,26 @@ PREMARKET_EMPTY_SUB = "يتم مراقبة السوق لحظياً بحثاً ع
 
 def _format_status_reason_ar(pm: PremarketOpportunitySignal) -> str:
     parts: list[str] = []
-    if pm.entry > 0:
-        parts.append(f"دخول: {pm.entry:.2f}")
-    if pm.stop_loss > 0:
-        parts.append(f"وقف: {pm.stop_loss:.2f}")
-    if pm.tp1 > 0:
-        parts.append(f"هدف 1: {pm.tp1:.2f}")
-    if pm.tp2 > 0:
-        parts.append(f"هدف 2: {pm.tp2:.2f}")
-    if pm.risk_reward > 0:
-        parts.append(f"R:R: {pm.risk_reward:.1f}")
+    if pm.status == "CONFIRMED_ENTRY":
+        if pm.entry > 0:
+            parts.append(f"دخول: {pm.entry:.2f}")
+        if pm.stop_loss > 0:
+            parts.append(f"وقف: {pm.stop_loss:.2f}")
+        if pm.tp1 > 0:
+            parts.append(f"هدف 1: {pm.tp1:.2f}")
+        if pm.tp2 > 0:
+            parts.append(f"هدف 2: {pm.tp2:.2f}")
+        if pm.risk_reward > 0:
+            parts.append(f"R:R: {pm.risk_reward:.1f}")
+    elif pm.status == "EARLY_MOMENTUM":
+        if pm.early_entry_zone > 0:
+            parts.append(f"منطقة مبكرة: {pm.early_entry_zone:.2f}")
+        if pm.invalidation_level > 0:
+            parts.append(f"إبطال: {pm.invalidation_level:.2f}")
+        if pm.distance_to_premarket_high > 0:
+            parts.append(f"بعد عن القمة: {pm.distance_to_premarket_high:.1f}%")
+        if pm.volume_acceleration > 0:
+            parts.append(f"تسارع حجم: {pm.volume_acceleration:.1f}x")
     if pm.reason:
         parts.append(f"السبب: {pm.reason}")
     return " | ".join(parts)
@@ -38,6 +48,7 @@ def premarket_to_stock_opportunity(
     *,
     name: str = "",
 ) -> StockOpportunity:
+    is_confirmed = pm.status == "CONFIRMED_ENTRY"
     return StockOpportunity(
         symbol=pm.symbol,
         name=name or pm.symbol,
@@ -46,12 +57,12 @@ def premarket_to_stock_opportunity(
         score=0,
         trend="صاعد" if pm.premarket_change_percent > 0.5 else "محايد",
         risk_level="مرتفع",
-        status="شراء",
-        ai_signal=pm.trigger_type or "ENTRY CONFIRMED",
+        status="شراء" if is_confirmed else "انتظار",
+        ai_signal=pm.status if pm.status in ("CONFIRMED_ENTRY", "EARLY_MOMENTUM") else (pm.trigger_type or "Wait"),
         confidence=0.0,
         confirmed_factors=0,
         total_factors=17,
-        safety_passed=True,
+        safety_passed=is_confirmed,
         status_reason_ar=_format_status_reason_ar(pm),
     )
 
@@ -74,7 +85,7 @@ def build_premarket_opportunities_response(
 ) -> OpportunitiesResponse:
     opportunities: list[StockOpportunity] = []
     for pm in scan.opportunities[:limit]:
-        if pm.status != "OPPORTUNITY":
+        if pm.status not in ("CONFIRMED_ENTRY", "EARLY_MOMENTUM"):
             continue
         opportunities.append(
             premarket_to_stock_opportunity(pm, name=_resolve_name(pm.symbol, state))

@@ -13,6 +13,7 @@ from services.premarket_opportunity_scanner import (
     PremarketMetrics,
     PremarketSnapshotRow,
     _compute_metrics,
+    _evaluate_early_momentum,
     _evaluate_long_breakout,
     _evaluate_long_pullback,
     _parse_premarket_row,
@@ -130,6 +131,44 @@ def test_long_pullback_requires_10pct_gain():
         trade_fresh=True, bars=_synthetic_breakout_bars(),
     )
     ok, _, ex = _evaluate_long_pullback(m)
+    assert ok is False
+
+
+def test_early_momentum_pmi_like_without_pm_high_break():
+    """Strong gap + volume below PM high should qualify as EARLY_MOMENTUM."""
+    m = PremarketMetrics(
+        symbol="PMI",
+        current_price=4.64,
+        premarket_change_percent=44.55,
+        premarket_volume=3_698_634,
+        premarket_high=5.11,
+        premarket_low=4.34,
+        vwap=4.738,
+        volume_1m=5918,
+        volume_5m=88523,
+        relative_volume=1.39,
+        spread_percent=0.2,
+        volume_acceleration=0.21,
+        distance_from_premarket_high_pct=9.2,
+        momentum_acceleration=0.5,
+        trade_fresh=True,
+        bars=_synthetic_breakout_bars(base=4.2, breakout=4.64),
+    )
+    ok, reason, ex = _evaluate_early_momentum(m)
+    assert ok is True
+    assert ex is None
+    assert "تسارع مبكر" in reason
+
+
+def test_early_momentum_rejects_weak_gap():
+    m = PremarketMetrics(
+        symbol="WEAK", current_price=5.1, premarket_change_percent=3.0,
+        premarket_volume=200_000, premarket_high=5.2, vwap=5.0,
+        relative_volume=0.8, spread_percent=0.5, volume_acceleration=0.5,
+        distance_from_premarket_high_pct=2.0, momentum_acceleration=-1.0,
+        trade_fresh=True, bars=_synthetic_breakout_bars(),
+    )
+    ok, _, ex = _evaluate_early_momentum(m)
     assert ok is False
 
 

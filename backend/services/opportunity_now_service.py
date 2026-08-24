@@ -229,7 +229,14 @@ def _pick_extended_alert() -> OpportunityNowSignal | None:
 
 
 def _premarket_to_opportunity_signal(pm: PremarketOpportunitySignal) -> OpportunityNowSignal:
-    status = "NOW" if pm.status == "OPPORTUNITY" else "WATCH"
+    if pm.status == "CONFIRMED_ENTRY":
+        status = "NOW"
+    elif pm.status == "EARLY_MOMENTUM":
+        status = "WATCH"
+    else:
+        status = "WATCH"
+    entry = pm.entry if pm.status == "CONFIRMED_ENTRY" else pm.early_entry_zone
+    stop = pm.stop_loss if pm.status == "CONFIRMED_ENTRY" else pm.invalidation_level
     return OpportunityNowSignal(
         symbol=pm.symbol,
         name=pm.symbol,
@@ -238,13 +245,13 @@ def _premarket_to_opportunity_signal(pm: PremarketOpportunitySignal) -> Opportun
         score=0.0,
         status=status,
         status_ar=STATUS_AR.get(status, status),
-        opportunity_type=pm.trigger_type or "PREMARKET",
+        opportunity_type=pm.status if pm.status != "WATCH" else (pm.trigger_type or "PREMARKET"),
         appeared_at="",
         expires_at="",
-        entry_zone=pm.entry,
-        entry_zone_low=pm.entry,
-        entry_zone_high=pm.entry,
-        stop_loss=pm.stop_loss,
+        entry_zone=entry,
+        entry_zone_low=entry,
+        entry_zone_high=entry,
+        stop_loss=stop,
         target_1=pm.tp1,
         target_2=pm.tp2,
         risk_level="مرتفع",
@@ -254,7 +261,7 @@ def _premarket_to_opportunity_signal(pm: PremarketOpportunitySignal) -> Opportun
         consecutive_confirmations=0,
         reasons_ar=[pm.reason] if pm.reason else [],
         cancellation_reasons_ar=[],
-        late_entry_warning=False,
+        late_entry_warning=pm.status == "EARLY_MOMENTUM",
         has_news_catalyst=False,
         movement_without_news=False,
         data_timestamp="",
@@ -265,7 +272,7 @@ def _premarket_to_opportunity_signal(pm: PremarketOpportunitySignal) -> Opportun
         extended_gap_pct=pm.premarket_change_percent,
         extended_volume=pm.premarket_volume,
         relative_volume=pm.relative_volume,
-        detection_stage=pm.trigger_type,
+        detection_stage=pm.trigger_type or pm.status,
         risk_flags_ar=[],
         volume_status="KNOWN",
     )
@@ -329,6 +336,10 @@ def get_opportunity_now() -> OpportunityNowResponse:
             if premarket_scan.top_opportunity:
                 top = _premarket_to_opportunity_signal(premarket_scan.top_opportunity)
                 resp_status = "NOW"
+                none_message = premarket_scan.message
+            elif premarket_scan.top_early:
+                top = _premarket_to_opportunity_signal(premarket_scan.top_early)
+                resp_status = "WATCH"
                 none_message = premarket_scan.message
             else:
                 top = None

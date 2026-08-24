@@ -6,8 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-PremarketTriggerType = Literal["LONG_BREAKOUT", "LONG_PULLBACK", ""]
-PremarketStatus = Literal["OPPORTUNITY", "WATCH", "NONE"]
+PremarketTriggerType = Literal["LONG_BREAKOUT", "LONG_PULLBACK", "EARLY_MOMENTUM", ""]
+PremarketStatus = Literal["CONFIRMED_ENTRY", "EARLY_MOMENTUM", "WATCH", "NONE"]
 ExclusionReason = Literal[
     "LOW_VOLUME",
     "NO_BREAKOUT",
@@ -40,7 +40,10 @@ class PremarketOpportunitySignal(BaseModel):
     volume_5m: int = 0
     relative_volume: float = 0.0
     distance_from_premarket_high_pct: float = 0.0
+    distance_to_premarket_high: float = 0.0
     momentum_acceleration: float = 0.0
+    early_entry_zone: float = 0.0
+    invalidation_level: float = 0.0
     bid: float = 0.0
     ask: float = 0.0
     reason: str = ""
@@ -54,4 +57,5 @@ class PremarketScanResult(BaseModel):
     opportunities: list[PremarketOpportunitySignal] = Field(default_factory=list)
     watches: list[PremarketOpportunitySignal] = Field(default_factory=list)
     top_opportunity: PremarketOpportunitySignal | None = None
+    top_early: PremarketOpportunitySignal | None = None
     top_watch: PremarketOpportunitySignal | None = None
