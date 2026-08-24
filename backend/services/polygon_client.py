@@ -15,6 +15,10 @@ from config import POLYGON_BASE_URL, POLYGON_PLAN, RATE_LIMIT_PER_MINUTE, get_po
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_HTTP_TIMEOUT_SEC = float(__import__("os").getenv("POLYGON_HTTP_TIMEOUT_SEC", "25"))
+DEFAULT_MAX_RETRIES = int(__import__("os").getenv("POLYGON_MAX_RETRIES", "3"))
+DEFAULT_RETRY_BACKOFF_SEC = float(__import__("os").getenv("POLYGON_RETRY_BACKOFF_SEC", "1.5"))
+
 
 class PolygonAPIError(Exception):
     def __init__(self, status_code: int, message: str):
@@ -42,18 +46,30 @@ class RateLimiter:
 
 
 class PolygonClient:
-    def __init__(self, api_key: str | None = None, plan: str = POLYGON_PLAN):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        plan: str = POLYGON_PLAN,
+        *,
+        http_timeout_sec: float = DEFAULT_HTTP_TIMEOUT_SEC,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+    ):
         resolved = (api_key or get_polygon_api_key()).strip()
         if not resolved:
             raise ValueError("API key missing — set MASSIVE_API_KEY or POLYGON_API_KEY in backend/.env")
         self.api_key = resolved
         self.plan = plan
         self.rate_limiter = RateLimiter(RATE_LIMIT_PER_MINUTE)
+        self.http_timeout_sec = http_timeout_sec
+        self.max_retries = max(1, max_retries)
         self._client: httpx.AsyncClient | None = None
+        self.retry_count = 0
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=30.0)
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.http_timeout_sec, connect=min(10.0, self.http_timeout_sec)),
+            )
         return self._client
 
     async def close(self) -> None:
@@ -61,22 +77,53 @@ class PolygonClient:
             await self._client.aclose()
 
     async def _request(self, path: str, params: dict | None = None) -> dict[str, Any]:
-        await self.rate_limiter.acquire()
         params = dict(params or {})
         params["apiKey"] = self.api_key
-
-        client = await self._get_client()
         url = f"{POLYGON_BASE_URL}{path}"
-        resp = await client.get(url, params=params)
+        last_err: Exception | None = None
 
-        if resp.status_code == 401:
-            raise PolygonAPIError(401, "Authentication failed — invalid API key")
-        if resp.status_code == 403:
-            raise PolygonAPIError(403, "Forbidden — check subscription plan")
-        if resp.status_code == 429:
-            raise PolygonAPIError(429, "Rate limit exceeded")
-        resp.raise_for_status()
-        return resp.json()
+        for attempt in range(1, self.max_retries + 1):
+            await self.rate_limiter.acquire()
+            client = await self._get_client()
+            try:
+                resp = await client.get(url, params=params)
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as exc:
+                last_err = exc
+                self.retry_count += 1
+                if attempt >= self.max_retries:
+                    raise PolygonAPIError(0, f"HTTP timeout/connect after {attempt} attempts: {exc}") from exc
+                wait = DEFAULT_RETRY_BACKOFF_SEC * attempt
+                logger.warning("Polygon retry %d/%d %s: %s (sleep %.1fs)", attempt, self.max_retries, path, exc, wait)
+                await asyncio.sleep(wait)
+                continue
+
+            if resp.status_code == 401:
+                raise PolygonAPIError(401, "Authentication failed — invalid API key")
+            if resp.status_code == 403:
+                raise PolygonAPIError(403, "Forbidden — check subscription plan")
+            if resp.status_code == 429:
+                last_err = PolygonAPIError(429, "Rate limit exceeded")
+                self.retry_count += 1
+                if attempt >= self.max_retries:
+                    raise last_err
+                wait = DEFAULT_RETRY_BACKOFF_SEC * attempt * 2
+                logger.warning("Polygon 429 retry %d/%d %s (sleep %.1fs)", attempt, self.max_retries, path, wait)
+                await asyncio.sleep(wait)
+                continue
+            if resp.status_code in (502, 503, 504):
+                last_err = PolygonAPIError(resp.status_code, resp.text[:200])
+                self.retry_count += 1
+                if attempt >= self.max_retries:
+                    raise last_err
+                wait = DEFAULT_RETRY_BACKOFF_SEC * attempt
+                logger.warning("Polygon %s retry %d/%d %s", resp.status_code, attempt, self.max_retries, path)
+                await asyncio.sleep(wait)
+                continue
+
+            resp.raise_for_status()
+            return resp.json()
+
+        raise PolygonAPIError(0, str(last_err or "request failed"))
 
     async def verify_authentication(self) -> dict[str, Any]:
         """Verify API key with a lightweight request."""
@@ -225,10 +272,13 @@ class PolygonClient:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume", "timestamp"])
         df = pd.DataFrame(results)
         df = df.rename(
-            columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume", "t": "timestamp"}
+            columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume", "t": "timestamp", "n": "transactions"}
         )
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-        return df[["open", "high", "low", "close", "volume", "timestamp"]]
+        cols = ["open", "high", "low", "close", "volume", "timestamp"]
+        if "transactions" in df.columns:
+            cols.append("transactions")
+        return df[cols]
 
     async def get_last_nbbo(self, symbol: str) -> dict[str, Any]:
         data = await self._request(f"/v2/last/nbbo/{symbol.upper()}")

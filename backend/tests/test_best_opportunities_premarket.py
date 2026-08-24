@@ -169,10 +169,15 @@ def test_opportunities_endpoint_uses_premarket_scanner_during_premarket(
 
     with patch("main.market_scanner.get_state", return_value=mock_state):
         with patch(
-            "services.best_opportunities_service.sync_premarket_scanner",
-            return_value=empty_scan,
-        ):
-            resp = client.get("/stocks/opportunities?limit=20", headers=auth_headers)
+            "services.best_opportunities_service.sync_pre_move_scan",
+        ) as mock_pm:
+            from models.pre_move import PreMoveScanResult
+            mock_pm.return_value = PreMoveScanResult()
+            with patch(
+                "services.best_opportunities_service.sync_premarket_scanner",
+                return_value=empty_scan,
+            ):
+                resp = client.get("/stocks/opportunities?limit=20", headers=auth_headers)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -202,11 +207,14 @@ def test_opportunities_endpoint_shows_premarket_confirmed(client: TestClient, au
     )
 
     with patch("main.market_scanner.get_state", return_value=mock_state):
-        with patch(
-            "services.best_opportunities_service.sync_premarket_scanner",
-            return_value=scan,
-        ):
-            resp = client.get("/stocks/opportunities?limit=20", headers=auth_headers)
+        with patch("services.best_opportunities_service.sync_pre_move_scan") as mock_prem:
+            from models.pre_move import PreMoveScanResult
+            mock_prem.return_value = PreMoveScanResult()
+            with patch(
+                "services.best_opportunities_service.sync_premarket_scanner",
+                return_value=scan,
+            ):
+                resp = client.get("/stocks/opportunities?limit=20", headers=auth_headers)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -217,9 +225,13 @@ def test_opportunities_endpoint_shows_premarket_confirmed(client: TestClient, au
 
 def test_get_best_opportunities_premarket_invokes_scanner():
     with patch(
-        "services.best_opportunities_service.sync_premarket_scanner",
-        return_value=PremarketScanResult(message="empty"),
+        "services.best_opportunities_service.sync_pre_move_scan",
+        return_value=__import__("models.pre_move", fromlist=["PreMoveScanResult"]).PreMoveScanResult(message="empty"),
     ) as mock_scan:
-        resp = get_best_opportunities_premarket(limit=5, state=None)
+        with patch(
+            "services.best_opportunities_service.sync_premarket_scanner",
+            return_value=PremarketScanResult(message="empty"),
+        ):
+            resp = get_best_opportunities_premarket(limit=5, state=None)
     mock_scan.assert_called_once()
     assert resp.opportunities == []

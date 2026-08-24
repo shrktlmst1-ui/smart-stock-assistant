@@ -1,13 +1,17 @@
-"""Best opportunities — premarket scanner is the sole source during PRE_MARKET."""
+"""Best opportunities — Pre-Move Predictor + Premarket Scanner pipeline."""
 
 from __future__ import annotations
 
 import logging
 
+from analysis.pre_move_scorer import status_rank
+from analysis.pre_move_stage_progression import stage_rank_for_sort
+from models.pre_move import PreMoveSignal
 from models.premarket_opportunity import PremarketOpportunitySignal, PremarketScanResult
 from models.scanner import MarketScanState, OpportunitiesResponse
 from models.stock import StockOpportunity
 from services.market_session import session_explanation
+from services.pre_move_predictor_service import sync_pre_move_scan
 from services.premarket_opportunity_scanner import sync_premarket_scanner
 
 logger = logging.getLogger(__name__)
@@ -16,7 +20,7 @@ PREMARKET_EMPTY_TITLE = "لا توجد فرصة دخول فعلية الآن"
 PREMARKET_EMPTY_SUB = "يتم مراقبة السوق لحظياً بحثاً عن اختراق أو ارتداد مؤكد"
 
 
-def _format_status_reason_ar(pm: PremarketOpportunitySignal) -> str:
+def _format_premarket_reason(pm: PremarketOpportunitySignal) -> str:
     parts: list[str] = []
     if pm.status == "CONFIRMED_ENTRY":
         if pm.entry > 0:
@@ -63,7 +67,61 @@ def premarket_to_stock_opportunity(
         confirmed_factors=0,
         total_factors=17,
         safety_passed=is_confirmed,
-        status_reason_ar=_format_status_reason_ar(pm),
+        status_reason_ar=_format_premarket_reason(pm),
+    )
+
+
+def pre_move_to_stock_opportunity(sig: PreMoveSignal, *, name: str = "") -> StockOpportunity:
+    is_entry = sig.status in ("EARLY_ENTRY", "HIGH_CONVICTION_EARLY", "CONFIRMED_ENTRY")
+    parts: list[str] = []
+    if sig.emoji:
+        parts.append(sig.emoji)
+    parts.append(f"PreMove {sig.pre_move_score}/100")
+    if sig.stage_progression.stage_progression_score > 0:
+        parts.append(f"StageProg {sig.stage_progression.stage_progression_score:.0f}")
+    if sig.stage_progression.persistence_minutes > 0:
+        parts.append(f"Persist {sig.stage_progression.persistence_minutes}m")
+    if sig.first_detected_price > 0:
+        parts.append(f"أول رصد: ${sig.first_detected_price:.2f}")
+    rvol = sig.volume.rvol_same_time if sig.volume.rvol_same_time is not None else sig.volume.rvol
+    if rvol > 0:
+        parts.append(f"RVOL {rvol:.1f}x")
+    if sig.volume.volume_acceleration > 0:
+        parts.append(f"Vol accel {sig.volume.volume_acceleration:.1f}x")
+    if sig.vwap.vwap_reclaim:
+        parts.append("VWAP RECLAIMED")
+    elif sig.vwap.vwap_hold:
+        parts.append("VWAP HOLD")
+    if sig.trigger_price > 0:
+        parts.append(f"Trigger: ${sig.trigger_price:.2f}")
+    if sig.entry_low > 0 and sig.entry_high > 0:
+        parts.append(f"Entry: ${sig.entry_low:.2f}–${sig.entry_high:.2f}")
+    if sig.stop_loss > 0:
+        parts.append(f"Stop: ${sig.stop_loss:.2f}")
+    if sig.tp1 > 0:
+        parts.append(f"TP1: ${sig.tp1:.2f}")
+    if sig.tp2 > 0:
+        parts.append(f"TP2: ${sig.tp2:.2f}")
+    if sig.risk_reward > 0:
+        parts.append(f"R:R {sig.risk_reward:.1f}")
+    if sig.reason:
+        parts.append(f"Reason: {sig.reason}")
+
+    return StockOpportunity(
+        symbol=sig.symbol,
+        name=name or sig.name or sig.symbol,
+        price=sig.current_price,
+        change_percent=sig.change_percent,
+        score=max(sig.pre_move_score, int(sig.stage_progression.stage_progression_score)),
+        trend="صاعد" if sig.change_percent > 0.5 else "محايد",
+        risk_level=sig.risk_level,
+        status="شراء" if is_entry and sig.timing != "LATE" else "انتظار",
+        ai_signal=sig.status,
+        confidence=0.0,
+        confirmed_factors=0,
+        total_factors=17,
+        safety_passed=is_entry and sig.liquidity.liquidity_score >= 40,
+        status_reason_ar=" | ".join(parts),
     )
 
 
@@ -76,6 +134,60 @@ def _resolve_name(symbol: str, state: MarketScanState | None) -> str:
     return symbol
 
 
+def _merge_opportunities(
+    pre_move_signals: list[PreMoveSignal],
+    premarket_signals: list[PremarketOpportunitySignal],
+    *,
+    limit: int,
+    state: MarketScanState | None,
+) -> list[StockOpportunity]:
+    by_symbol: dict[str, StockOpportunity] = {}
+
+    ranked_pre_move = sorted(
+        pre_move_signals,
+        key=lambda s: (
+            stage_rank_for_sort(
+                s.stage_progression.stage_lifecycle,
+                s.stage_progression.stage_progression_score,
+                s.stage_progression.momentum_persistence_score,
+                late_guard=s.late_move.is_too_late,
+            ),
+            status_rank(s.status),
+            s.stage_progression.stage_progression_score,
+            s.pre_move_score,
+        ),
+        reverse=True,
+    )
+
+    for sig in ranked_pre_move:
+        if sig.status in ("NO_SETUP", "TOO_LATE_TO_CHASE", "INSUFFICIENT_DATA", "FAILED_SETUP"):
+            continue
+        by_symbol[sig.symbol.upper()] = pre_move_to_stock_opportunity(
+            sig, name=_resolve_name(sig.symbol, state),
+        )
+
+    for pm in premarket_signals:
+        sym = pm.symbol.upper()
+        if sym in by_symbol:
+            existing = by_symbol[sym]
+            if pm.status == "CONFIRMED_ENTRY" and status_rank("CONFIRMED_ENTRY") >= status_rank(existing.ai_signal):  # type: ignore[arg-type]
+                by_symbol[sym] = premarket_to_stock_opportunity(pm, name=_resolve_name(sym, state))
+                by_symbol[sym].score = max(existing.score, by_symbol[sym].score)
+            continue
+        if pm.status in ("CONFIRMED_ENTRY", "EARLY_MOMENTUM"):
+            by_symbol[sym] = premarket_to_stock_opportunity(pm, name=_resolve_name(sym, state))
+
+    ranked = sorted(
+        by_symbol.values(),
+        key=lambda o: (
+            status_rank(o.ai_signal),  # type: ignore[arg-type]
+            o.score,
+        ),
+        reverse=True,
+    )
+    return ranked[:limit]
+
+
 def build_premarket_opportunities_response(
     scan: PremarketScanResult,
     *,
@@ -83,23 +195,48 @@ def build_premarket_opportunities_response(
     state: MarketScanState | None = None,
     session: str = "PRE_MARKET",
 ) -> OpportunitiesResponse:
-    opportunities: list[StockOpportunity] = []
-    for pm in scan.opportunities[:limit]:
-        if pm.status not in ("CONFIRMED_ENTRY", "EARLY_MOMENTUM"):
-            continue
-        opportunities.append(
-            premarket_to_stock_opportunity(pm, name=_resolve_name(pm.symbol, state))
-        )
+    """Premarket-only response (tests / legacy)."""
+    opportunities = _merge_opportunities([], scan.opportunities, limit=limit, state=state)
+    return OpportunitiesResponse(
+        market_status=session,  # type: ignore[arg-type]
+        opportunities=opportunities,
+        watchlist_candidates=[],
+        explanation=session_explanation(session),  # type: ignore[arg-type]
+        no_signal_reason=(
+            f"{PREMARKET_EMPTY_TITLE}\n{PREMARKET_EMPTY_SUB}"
+            if not opportunities else scan.message
+        ),
+        debug=state.debug if state else None,
+    )
+
+
+def build_best_opportunities_response(
+    *,
+    limit: int = 20,
+    state: MarketScanState | None = None,
+    session: str = "PRE_MARKET",
+    snapshot_raw: dict | None = None,
+) -> OpportunitiesResponse:
+    pre_move = sync_pre_move_scan(snapshot_raw)
+    premarket = sync_premarket_scanner(snapshot_raw) if session == "PRE_MARKET" else PremarketScanResult()
+
+    opportunities = _merge_opportunities(
+        pre_move.signals,
+        premarket.opportunities,
+        limit=limit,
+        state=state,
+    )
 
     logger.info(
-        "BEST_OPPORTUNITIES source=PREMARKET_SCANNER count=%d session=%s",
+        "BEST_OPPORTUNITIES source=PREMOVE_SCANNER count=%d premarket=%d session=%s",
         len(opportunities),
+        len(premarket.opportunities),
         session,
     )
+
+    message = premarket.message if premarket.opportunities else pre_move.message
     if not opportunities:
-        logger.info(
-            "BEST_OPPORTUNITIES source=PREMARKET_SCANNER count=0 (no legacy fallback)",
-        )
+        logger.info("BEST_OPPORTUNITIES source=PREMOVE_SCANNER count=0 (no legacy fallback)")
 
     return OpportunitiesResponse(
         market_status=session,  # type: ignore[arg-type]
@@ -109,7 +246,7 @@ def build_premarket_opportunities_response(
         no_signal_reason=(
             f"{PREMARKET_EMPTY_TITLE}\n{PREMARKET_EMPTY_SUB}"
             if not opportunities
-            else scan.message
+            else message
         ),
         debug=state.debug if state else None,
     )
@@ -120,11 +257,13 @@ def get_best_opportunities_premarket(
     limit: int = 20,
     state: MarketScanState | None = None,
 ) -> OpportunitiesResponse:
-    scan = sync_premarket_scanner()
+    from services.market_scanner_service import market_scanner
+
     session = state.market_status if state and state.market_status else "PRE_MARKET"
-    return build_premarket_opportunities_response(
-        scan,
+    raw = market_scanner._snapshot_raw
+    return build_best_opportunities_response(
         limit=limit,
         state=state,
         session=session,
+        snapshot_raw=raw,
     )

@@ -27,6 +27,7 @@ from config import (
     is_production_release,
 )
 from database.signal_analytics_db import init_signal_analytics_db
+from database.pre_move_db import compute_kpis, init_pre_move_db
 from database.trade_replay_db import init_trade_replay_db
 from database.signal_logger import get_signal_history, init_db
 from database.smart_signal_logger import get_smart_signal_history, init_smart_signals_db
@@ -38,7 +39,7 @@ from models.smart_opportunity import (
     SmartOpportunitiesResponse,
 )
 from services.smart_opportunities_service import get_smart_opportunities
-from services.best_opportunities_service import get_best_opportunities_premarket
+from services.best_opportunities_service import build_best_opportunities_response, get_best_opportunities_premarket
 from services.opportunity_now_service import get_opportunity_now
 from models.opportunity_now import OpportunityNowResponse
 from models.performance import BacktestMetrics, JournalEntry, PerformanceMetrics, ProductionStatus
@@ -196,6 +197,7 @@ async def lifespan(app: FastAPI):
     init_db()
     init_journal_db()
     init_signal_analytics_db()
+    init_pre_move_db()
     init_trade_replay_db()
     init_smart_signals_db()
     set_notification_broadcast(broadcast)
@@ -420,8 +422,13 @@ async def opportunities(limit: int = Query(default=20, ge=1, le=20)):
     state = market_scanner.get_state()
     session = state.market_status if state and state.market_status else get_us_market_session()
 
-    if session == "PRE_MARKET":
-        return get_best_opportunities_premarket(limit=limit, state=state)
+    if session in ("PRE_MARKET", "REGULAR", "AFTER_HOURS"):
+        return build_best_opportunities_response(
+            limit=limit,
+            state=state,
+            session=session,
+            snapshot_raw=market_scanner._snapshot_raw,
+        )
 
     if not state:
         return OpportunitiesResponse(
@@ -448,6 +455,21 @@ async def opportunities(limit: int = Query(default=20, ge=1, le=20)):
 @app.get("/stocks/search", response_model=list[SearchResult])
 async def search(q: str = Query(..., min_length=1)):
     return await search_stocks(q)
+
+
+@app.get("/pre-move/stats")
+def pre_move_stats():
+    """Pre-Move Predictor scan stats and KPIs."""
+    from services.pre_move_predictor_service import get_last_pre_move_scan, sync_pre_move_scan
+
+    scan = get_last_pre_move_scan() or sync_pre_move_scan(deep_limit=20)
+    return {
+        "stats": scan.stats.model_dump(),
+        "signals_count": len(scan.signals),
+        "rejected_count": len(scan.rejected),
+        "top_signals": [s.model_dump() for s in scan.signals[:5]],
+        "kpis": compute_kpis(),
+    }
 
 
 @app.get("/signals/history")
