@@ -45,6 +45,11 @@ class StockSnapshot(BaseModel):
     alerts: list[Alert] = []
     news: list[NewsItem] = []
     last_updated: str
+    price_timestamp: str = ""
+    price_session: str = ""
+    price_source: str = ""
+    price_is_stale: bool = False
+    price_stale_reason: str = ""
     # AI Trading Assistant modules
     ai_signal: AISignal
     meters: DashboardMeters

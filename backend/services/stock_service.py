@@ -80,16 +80,17 @@ def _ai_to_status(signal: str, decision_rec: str = "") -> StockStatus:
     }.get(signal, "انتظار")
 
 
+def _resolve_snapshot_price(snap: dict):
+    from services.session_price import SessionPrice, ensure_session_cache_valid, parse_snapshot_price
+
+    session = ensure_session_cache_valid()
+    return parse_snapshot_price(snap, session=session)
+
+
 def _parse_snapshot_price(snap: dict) -> tuple[float, int, float, float]:
-    day = snap.get("day", {})
-    prev = snap.get("prevDay", {})
-    last_trade = snap.get("lastTrade", {})
-    min_bar = snap.get("min", {})
-    price = float(last_trade.get("p") or min_bar.get("c") or day.get("c") or prev.get("c") or 0)
-    volume = int(day.get("v") or min_bar.get("v") or 0)
-    prev_close = float(prev.get("c") or price)
-    change = price - prev_close
-    change_pct = (change / prev_close * 100) if prev_close else 0.0
+    price, volume, change, change_pct, sp = _resolve_snapshot_price(snap)
+    if sp.is_stale:
+        return 0.0, 0, 0.0, 0.0
     return price, volume, change, change_pct
 
 
@@ -115,6 +116,7 @@ def _analyze_sync(
     change: float,
     change_pct: float,
     name: str,
+    price_meta: dict | None = None,
 ) -> StockSnapshot | None:
     df = _patch_df_with_live(cache, price, volume)
     if df.empty:
@@ -152,6 +154,9 @@ def _analyze_sync(
     evaluate_open_trades(symbol, price)
     update_analytics_tracks(symbol, price, news_risk=news_risk.risk_score if news_risk else 0.0)
 
+    meta = price_meta or {}
+    price_ts = meta.get("price_timestamp") or datetime.now(timezone.utc).isoformat()
+
     return StockSnapshot(
         symbol=symbol,
         name=name,
@@ -165,7 +170,12 @@ def _analyze_sync(
         signals=legacy_signals,
         alerts=alerts,
         news=cache.news,
-        last_updated=datetime.now(timezone.utc).isoformat(),
+        last_updated=price_ts,
+        price_timestamp=meta.get("price_timestamp", ""),
+        price_session=meta.get("price_session", ""),
+        price_source=meta.get("price_source", ""),
+        price_is_stale=bool(meta.get("price_is_stale", False)),
+        price_stale_reason=meta.get("price_stale_reason", ""),
         ai_signal=ai_signal,
         meters=meters,
         smc=smc,
@@ -261,14 +271,14 @@ def _trim_symbol_cache(active_symbols: set[str] | None = None) -> None:
         _symbol_cache.pop(key, None)
 
 
-def _analyze_batch_sync(jobs: list[tuple[str, SymbolCache, float, int, float, float, str]]) -> list[StockSnapshot | None]:
+def _analyze_batch_sync(jobs: list[tuple[str, SymbolCache, float, int, float, float, str, dict | None]]) -> list[StockSnapshot | None]:
     if not jobs:
         return []
     workers = min(SCANNER_WORKER_THREADS, len(jobs))
 
-    def _run(job: tuple[str, SymbolCache, float, int, float, float, str]) -> StockSnapshot | None:
-        symbol, cache, price, volume, change, change_pct, name = job
-        return _analyze_sync(symbol, cache, price, volume, change, change_pct, name)
+    def _run(job: tuple[str, SymbolCache, float, int, float, float, str, dict | None]) -> StockSnapshot | None:
+        symbol, cache, price, volume, change, change_pct, name, price_meta = job
+        return _analyze_sync(symbol, cache, price, volume, change, change_pct, name, price_meta=price_meta)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(_run, jobs))
@@ -278,7 +288,7 @@ async def _prep_snapshot_job(
     sym: str,
     client: PolygonClient,
     batch: dict[str, dict],
-) -> tuple[str, SymbolCache, float, int, float, float, str] | None:
+) -> tuple[str, SymbolCache, float, int, float, float, str, dict] | None:
     symbol = sym.upper().strip()
     if symbol not in _symbol_cache:
         _symbol_cache[symbol] = SymbolCache()
@@ -286,9 +296,11 @@ async def _prep_snapshot_job(
     snap_data = batch.get(symbol)
     if not snap_data:
         return None
-    price, volume, change, change_pct = _parse_snapshot_price(snap_data)
-    if price <= 0:
+    price, volume, change, change_pct, sp = _resolve_snapshot_price(snap_data)
+    if sp.is_stale or price <= 0:
         return None
+    from services.session_price import parse_snapshot_price as _session_parse
+    _, _, _, _, sp = _session_parse(snap_data, session=ensure_session_cache_valid())
     try:
         async with asyncio.timeout(PER_SYMBOL_PREP_TIMEOUT_SEC):
             await _ensure_bars(symbol, client, cache)
@@ -300,7 +312,7 @@ async def _prep_snapshot_job(
     except Exception as exc:
         logger.debug("Symbol prep failed %s: %s", symbol, type(exc).__name__)
         return None
-    return symbol, cache, price, volume, change, change_pct, name
+    return symbol, cache, price, volume, change, change_pct, name, sp.to_metadata()
 
 
 async def build_stock_snapshot(
@@ -317,8 +329,8 @@ async def build_stock_snapshot(
     try:
         if snap_data is None:
             snap_data = await client.get_snapshot(symbol)
-        price, volume, change, change_pct = _parse_snapshot_price(snap_data)
-        if price <= 0:
+        price, volume, change, change_pct, sp = _resolve_snapshot_price(snap_data)
+        if sp.is_stale or price <= 0:
             return None
 
         await _ensure_bars(symbol, client, cache)
@@ -326,7 +338,7 @@ async def build_stock_snapshot(
         name = await _get_name(symbol, client)
 
         snap = await asyncio.to_thread(
-            _analyze_sync, symbol, cache, price, volume, change, change_pct, name
+            _analyze_sync, symbol, cache, price, volume, change, change_pct, name, sp.to_metadata()
         )
         return snap
     except Exception as e:

@@ -184,10 +184,13 @@ def test_sugp_extended_alert_separate_from_top_signal():
     )
     live_confirmation_engine.set_monitor_symbols(["SUGP", "BTCT"])
 
+    from models.premarket_opportunity import PremarketScanResult
+
     with patch("services.opportunity_now_service.sync_engine_from_scanner"):
-        with patch("services.opportunity_now_service.sync_premarket_scanner") as mock_pm:
-            from models.premarket_opportunity import PremarketScanResult
-            mock_pm.return_value = PremarketScanResult(message="لا توجد فرصة فعلية الآن")
+        with patch(
+            "services.premarket_opportunity_scanner.get_last_premarket_scan",
+            return_value=PremarketScanResult(message="لا توجد فرصة فعلية الآن"),
+        ):
             with patch("services.opportunity_now_service.get_us_market_session", return_value="PRE_MARKET"):
                 with patch("services.opportunity_now_service.is_regular_session", return_value=False):
                     resp = svc.get_opportunity_now()

@@ -29,7 +29,7 @@ def _score_one(
             "market_cap": member.market_cap,
             "float_shares": member.float_shares,
         }
-    m = parse_snapshot_item(item, meta)
+    m = parse_snapshot_item(item, meta, session=session)
     if not m or not passes_liquidity_filter(m, session):
         return None
     coarse = compute_coarse_institutional_score(m, item)

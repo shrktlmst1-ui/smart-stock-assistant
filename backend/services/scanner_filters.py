@@ -14,7 +14,8 @@ from config import (
     SCANNER_MIN_PRICE,
     SCANNER_MIN_RVOL,
 )
-from services.market_session import MarketSession, is_regular_session
+from services.market_session import MarketSession, get_us_market_session, is_regular_session
+from services.session_price import resolve_session_price
 from services.volume_cache import get_cached_adv30
 
 
@@ -55,6 +56,7 @@ def _safe_float(v: object, default: float = 0.0) -> float:
 def parse_snapshot_item(
     item: dict,
     metadata: dict | None = None,
+    session: MarketSession | None = None,
 ) -> TickerMetrics | None:
     sym = (item.get("ticker") or "").upper()
     if not sym or len(sym) > 5:
@@ -63,25 +65,23 @@ def parse_snapshot_item(
     if sym.endswith(("W", "U", "R", "P")) and len(sym) > 4:
         return None
 
+    market_session = session or get_us_market_session()
+    sp = resolve_session_price(item, session=market_session)
+    if not sp.is_valid:
+        return None
+
+    price = sp.price
+    volume = sp.volume
+    change_pct = sp.change_percent
+
     day = item.get("day") or {}
     prev = item.get("prevDay") or {}
-    min_bar = item.get("min") or {}
-    last_trade = item.get("lastTrade") or {}
     pre = item.get("preMarket") or {}
     after = item.get("afterHours") or {}
     meta = metadata or {}
 
-    price = _safe_float(last_trade.get("p") or min_bar.get("c") or day.get("c") or prev.get("c"))
-    if price <= 0:
-        return None
-
-    volume = int(day.get("v") or min_bar.get("v") or 0)
     prev_vol = int(prev.get("v") or 1) or 1
     prev_close = _safe_float(prev.get("c"), price)
-
-    change_pct = _safe_float(item.get("todaysChangePerc"))
-    if change_pct == 0 and prev_close:
-        change_pct = (price - prev_close) / prev_close * 100
 
     rvol = volume / prev_vol if prev_vol else 1.0
     day_high = _safe_float(day.get("h"), price)

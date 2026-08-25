@@ -105,6 +105,14 @@ def test_composite_score_from_real_metrics():
     assert bd.early_activity >= 0
 
 
+def test_pre_move_predictor_service_validate_signal_import():
+    """Regression: _deep_analyze must resolve validate_signal (no NameError)."""
+    import services.pre_move_predictor_service as pmps
+    from analysis.pre_move_validator import validate_signal as vs
+
+    assert pmps.validate_signal is vs
+
+
 def test_validate_rejects_contradiction():
     sig = PreMoveSignal(
         signal_id="X:2026-08-24",

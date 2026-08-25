@@ -168,6 +168,10 @@ def test_opportunities_endpoint_uses_premarket_scanner_during_premarket(
         top_watch=_watch_signal(),
     )
 
+    from services.snapshot_cache_service import invalidate_opportunities_cache
+
+    invalidate_opportunities_cache()
+
     with patch("main.market_scanner.get_state", return_value=mock_state):
         with patch(
             "services.best_opportunities_service.sync_pre_move_scan",

@@ -35,6 +35,7 @@ from analysis.pre_move_stage_progression import (
     stage_rank_for_sort,
 )
 from analysis.pre_move_volume import compute_rvol_same_time, compute_volume_metrics
+from analysis.pre_move_validator import validate_signal
 from analysis.pre_move_vwap import compute_vwap_metrics
 from config import (
     PREMOVE_CANDIDATE_LIMIT,
@@ -56,6 +57,7 @@ from services.market_session import ET, get_us_market_session
 from services.pre_move_stage_store import clear_stale_states, get_or_create_state, update_stage_state
 from services.news_service import fetch_stock_news
 from services.scanner_filters import parse_snapshot_item
+from services.session_price import STALE_PRICE_REASON_AR, STALE_PRICE_STATUS, resolve_session_price
 
 logger = logging.getLogger(__name__)
 
@@ -103,17 +105,18 @@ async def _fetch_bars(client, symbol: str, session: str) -> pd.DataFrame:
     return df
 
 
-def _fast_filter(snapshot_raw: dict[str, dict], limit: int) -> list[dict[str, Any]]:
+def _fast_filter(snapshot_raw: dict[str, dict], limit: int, session: str) -> list[dict[str, Any]]:
     """Stage 1–2: fast universe scan + early activity detection."""
     rows: list[dict[str, Any]] = []
     scanned = 0
+    market_session = session or get_us_market_session()
     for sym, item in snapshot_raw.items():
         if scanned >= limit:
             break
         if not is_eligible_extended_gap_symbol(sym, item):
             continue
         scanned += 1
-        metrics = parse_snapshot_item(item)
+        metrics = parse_snapshot_item(item, session=market_session)
         if not metrics:
             continue
         if metrics.price < SCANNER_MIN_PRICE or metrics.price > SCANNER_MAX_PRICE:
@@ -160,12 +163,31 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
     client = get_client()
     try:
         async with asyncio.timeout(20):
-            bars = await _fetch_bars(client, sym, session)
             nbbo: dict = {}
             try:
                 nbbo = await client.get_last_nbbo(sym)
             except Exception:
                 pass
+
+            sp = resolve_session_price(item, session=session, nbbo=nbbo)  # type: ignore[arg-type]
+            if sp.is_stale:
+                return PreMoveSignal(
+                    signal_id=f"{sym}:{now_iso[:10]}",
+                    symbol=sym,
+                    name=candidate.get("name", sym),
+                    current_price=0.0,
+                    change_percent=0.0,
+                    status=STALE_PRICE_STATUS,
+                    rejection_reason=STALE_PRICE_STATUS,
+                    reason=STALE_PRICE_REASON_AR,
+                    data_timestamp=now_iso,
+                )
+
+            price = sp.price
+            change_pct = sp.change_percent
+            price_ts = sp.timestamp.isoformat() if sp.timestamp else now_iso
+
+            bars = await _fetch_bars(client, sym, session)
             prior_bars: pd.DataFrame | None = None
             try:
                 from datetime import timedelta
@@ -383,7 +405,7 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
         stage_progression=stage_metrics,
         risk_level=risk,
         reason=reason,
-        data_timestamp=now_iso,
+        data_timestamp=price_ts,
         data_age_seconds=0.0,
         lifecycle_history=[PreMoveLifecycleEvent(at=now_iso, status=status, score=score, price=price)],
     )
@@ -423,7 +445,7 @@ async def scan_pre_move_async(
     if not raw:
         return PreMoveScanResult(message="No snapshot data")
 
-    candidates = _fast_filter(raw, PREMOVE_FAST_SCAN_LIMIT)
+    candidates = _fast_filter(raw, PREMOVE_FAST_SCAN_LIMIT, session)
     stats.scanned = min(len(raw), PREMOVE_FAST_SCAN_LIMIT)
     stats.early_candidates = len(candidates)
 

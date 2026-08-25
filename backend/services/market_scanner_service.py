@@ -431,7 +431,9 @@ class MarketScannerService:
     async def run_fast_tick(self) -> MarketScanState:
         t0 = time.monotonic()
         now_mono = time.monotonic()
-        self.market_session = get_us_market_session()
+        from services.session_price import ensure_session_cache_valid
+
+        self.market_session = ensure_session_cache_valid()
         regular = is_regular_session(self.market_session)
 
         if now_mono - self._universe_updated > SCANNER_UNIVERSE_REFRESH_SECONDS or not self._scored_metrics:

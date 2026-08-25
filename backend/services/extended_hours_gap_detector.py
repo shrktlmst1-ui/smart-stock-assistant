@@ -73,12 +73,9 @@ def _safe_float(v: object, default: float = 0.0) -> float:
 
 
 def _ns_to_datetime(ns: object) -> datetime | None:
-    if ns is None:
-        return None
-    try:
-        return datetime.fromtimestamp(int(ns) / 1_000_000_000, tz=timezone.utc)
-    except (TypeError, ValueError, OSError):
-        return None
+    from services.session_price import _ns_to_datetime as _parse_exchange_ts
+
+    return _parse_exchange_ts(ns)
 
 
 def _is_trade_in_extended_session(trade_ns: object, session: MarketSession) -> bool:

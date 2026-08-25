@@ -17,6 +17,7 @@ PreMoveStatus = Literal[
     "TOO_LATE_TO_CHASE",
     "CONFIRMED_ENTRY",
     "INSUFFICIENT_DATA",
+    "STALE_PRICE",
     "FAILED_SETUP",
 ]
 

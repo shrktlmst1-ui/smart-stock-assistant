@@ -224,6 +224,14 @@ def get_opportunities_response(
     return response
 
 
+def invalidate_opportunities_cache() -> None:
+    """Clear cached opportunities snapshot (e.g. on session transition)."""
+    global _cached
+    with _snapshot_lock:
+        _cached = None
+    logger.info("Opportunities snapshot cache cleared")
+
+
 def schedule_opportunities_refresh(
     *,
     session: str | None = None,

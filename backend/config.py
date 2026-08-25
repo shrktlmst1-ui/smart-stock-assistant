@@ -77,7 +77,7 @@ SCANNER_MIN_MARKET_CAP: float = float(os.getenv("SCANNER_MIN_MARKET_CAP", "50000
 SCANNER_BOARD_SIZE: int = int(os.getenv("SCANNER_BOARD_SIZE", "20"))
 
 POLYGON_BASE_URL: str = "https://api.polygon.io"
-POLYGON_WS_URL: str = "wss://socket.polygon.io/stocks"
+POLYGON_WS_URL: str = os.getenv("POLYGON_WS_URL", "wss://socket.massive.com/stocks")
 
 # Production + local dev origins for cross-origin Flutter web.
 REQUIRED_CORS_ORIGINS: tuple[str, ...] = (

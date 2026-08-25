@@ -19,6 +19,7 @@ from config import (
 )
 from services.connection_service import get_connection_status, _wait_ws_auth
 from services.live_confirmation_engine import LIVE_MONITOR_POOL, live_confirmation_engine
+from services.live_price_registry import live_price_registry
 from services.market_scanner_service import market_scanner
 from services.opportunity_now_service import sync_engine_from_scanner
 from services.polygon_client import PolygonClient
@@ -166,29 +167,32 @@ class MarketStream:
         return []
 
     async def _run_websocket_with_fallback(self) -> None:
-        ws_failures = 0
+        backoff = 2.0
+        max_backoff = 60.0
         while self._running:
             try:
+                live_price_registry.note_reconnect()
                 await self._run_websocket()
+                backoff = 2.0
             except websockets.exceptions.ConnectionClosedError as e:
-                ws_failures += 1
                 code = getattr(e, "code", None)
-                logger.error("WebSocket closed (%d) code=%s: %s", ws_failures, code, e)
+                live_price_registry.set_error(str(code or e))
+                live_price_registry.set_connected(False)
                 live_confirmation_engine.set_ws_status(
                     connected=False, fallback=True, error=str(code or e),
                 )
-                if code == 1008 or ws_failures >= 3:
-                    self.mode = "scanner_rest"
-                    return
-                await asyncio.sleep(3)
+                self.mode = "scanner_rest"
+                logger.warning("[LIVE_PRICE] websocket closed code=%s — retry in %.0fs", code, backoff)
             except Exception as e:
-                ws_failures += 1
-                logger.error("WebSocket failed (%d): %s", ws_failures, e)
+                live_price_registry.set_error(str(e))
+                live_price_registry.set_connected(False)
                 live_confirmation_engine.set_ws_status(connected=False, fallback=True, error=str(e))
-                if ws_failures >= 3:
-                    self.mode = "scanner_rest"
-                    return
-                await asyncio.sleep(3)
+                self.mode = "scanner_rest"
+                logger.warning("[LIVE_PRICE] websocket error %s — retry in %.0fs", type(e).__name__, backoff)
+            if not self._running:
+                break
+            await asyncio.sleep(backoff)
+            backoff = min(max_backoff, backoff * 1.5)
 
     async def _handle_ws_payload(self, payload: list | dict) -> None:
         items = payload if isinstance(payload, list) else [payload]
@@ -203,7 +207,17 @@ class MarketStream:
                 price = float(item.get("p") or item.get("price") or 0)
                 size = int(item.get("s") or item.get("size") or 0)
                 if price > 0:
+                    live_price_registry.ingest_trade(
+                        sym, price, exchange_ts_ns=item.get("t"), size=size,
+                    )
                     live_confirmation_engine.ingest_ws_trade(sym, price, size)
+            elif ev == "Q":
+                bid = float(item.get("bp") or item.get("p") or 0)
+                ask = float(item.get("ap") or item.get("P") or 0)
+                if bid > 0 and ask > 0:
+                    live_price_registry.ingest_quote(
+                        sym, bid, ask, exchange_ts_ns=item.get("t"),
+                    )
             elif ev in ("AM", "A"):
                 price = float(item.get("c") or item.get("close") or item.get("p") or 0)
                 vol = int(item.get("v") or item.get("volume") or 0)
@@ -222,16 +236,19 @@ class MarketStream:
             await ws.send(json.dumps({"action": "auth", "params": api_key}))
             auth_ok, auth_msg = await _wait_ws_auth(ws)
             if not auth_ok:
+                live_price_registry.set_connected(False)
                 raise ConnectionError(f"WebSocket auth failed: {auth_msg}")
 
+            live_price_registry.set_connected(True, authenticated=True)
             live_confirmation_engine.set_ws_status(connected=True, fallback=False)
 
             if symbols:
                 channels: list[str] = []
                 for s in symbols:
-                    channels.extend([f"T.{s}", f"AM.{s}"])
+                    channels.extend([f"T.{s}", f"Q.{s}"])
                 await ws.send(json.dumps({"action": "subscribe", "params": ",".join(channels)}))
-                logger.info("WS subscribed to %d symbols (max %d)", len(symbols), LIVE_MONITOR_POOL)
+                live_price_registry.set_subscribed(symbols)
+                logger.info("WS subscribed T+Q for %d symbols (max %d)", len(symbols), LIVE_MONITOR_POOL)
 
             async for message in ws:
                 if not self._running:
@@ -243,6 +260,8 @@ class MarketStream:
                 if isinstance(data, list) and data and data[0].get("ev") == "status":
                     status_msg = data[0].get("message", "")
                     if "1008" in status_msg or "policy" in status_msg.lower():
+                        live_price_registry.set_connected(False)
+                        live_price_registry.set_error(status_msg)
                         live_confirmation_engine.set_ws_status(
                             connected=False, fallback=True, error=status_msg,
                         )
