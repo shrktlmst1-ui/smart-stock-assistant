@@ -7,8 +7,8 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from config import JUMP_ALERT_TTL_SECONDS
-from models.jump_alert import JumpAlert
+from config import JUMP_ALERT_DISPLAY_LIMIT, JUMP_ALERT_TTL_SECONDS
+from models.jump_alert import QUALIFIED_JUMP_SIGNALS, JumpAlert
 from models.pre_move import PreMoveSignal
 from models.scanner import OpportunitiesResponse
 from models.stock import StockOpportunity
@@ -24,6 +24,16 @@ def _parse_iso(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
+def _timing_label_ar(timing: str, *, is_too_late: bool) -> str:
+    if is_too_late:
+        return "متأخر — لا دخول جديد"
+    if timing == "EARLY":
+        return "دخول مبكر"
+    if timing == "LATE":
+        return "دخول متأخر"
+    return "دخول طبيعي"
+
+
 class JumpAlertRegistry:
     """Thread-safe in-memory registry for sticky Jump Alerts."""
 
@@ -37,35 +47,63 @@ class JumpAlertRegistry:
             self._alerts.clear()
             self._history.clear()
 
-    def create_from_signal(self, sig: PreMoveSignal) -> JumpAlert:
+    def _payload_from_signal(self, sig: PreMoveSignal) -> dict:
+        stage = sig.stage_progression.stage_lifecycle or sig.lifecycle or sig.status
+        score = max(sig.pre_move_score, int(sig.stage_progression.stage_progression_score))
+        vol_accel = sig.volume.volume_acceleration_1m or sig.volume.volume_acceleration
+        is_too_late = sig.status == "TOO_LATE_TO_CHASE" or sig.late_move.is_too_late
+        return {
+            "price": sig.current_price,
+            "change_percent": sig.change_percent,
+            "stage": stage,
+            "score": score,
+            "ai_signal": sig.status,
+            "status_reason_ar": sig.reason or f"PreMove {sig.pre_move_score}/100",
+            "jump_qualified": True,
+            "jump_alert_created": True,
+            "jump_type": sig.status,
+            "entry_low": sig.entry_low,
+            "entry_high": sig.entry_high,
+            "stop_loss": sig.stop_loss,
+            "tp1": sig.tp1,
+            "tp2": sig.tp2,
+            "rvol": sig.volume.rvol,
+            "volume_acceleration": vol_accel,
+            "trigger_price": sig.trigger_price,
+            "timing": sig.timing,
+            "persistence_minutes": sig.stage_progression.persistence_minutes,
+            "risk_reward": sig.risk_reward,
+            "is_too_late": is_too_late,
+        }
+
+    def create_from_signal(self, sig: PreMoveSignal) -> JumpAlert | None:
+        if not sig.validated or sig.status not in QUALIFIED_JUMP_SIGNALS:
+            return None
+        if sig.late_move.is_too_late or sig.status == "TOO_LATE_TO_CHASE":
+            return None
+
         sym = sig.symbol.upper()
         now = _utc_now()
         created_at = now.isoformat()
         expires_at = (now + timedelta(seconds=JUMP_ALERT_TTL_SECONDS)).isoformat()
-        stage = sig.stage_progression.stage_lifecycle or sig.lifecycle or sig.status
-        score = max(sig.pre_move_score, int(sig.stage_progression.stage_progression_score))
-        reason = sig.reason or f"PreMove {sig.pre_move_score}/100"
+        payload = self._payload_from_signal(sig)
 
         with self._lock:
             for alert in self._alerts.values():
                 if alert.symbol == sym and alert.status == "ACTIVE":
-                    alert.price = sig.current_price
-                    alert.change_percent = sig.change_percent
-                    alert.stage = stage
-                    alert.score = score
-                    alert.ai_signal = sig.status
-                    alert.status_reason_ar = reason
+                    updated = alert.model_copy(update=payload)
+                    self._alerts[alert.alert_id] = updated
                     logger.info(
                         "JUMP_ALERT_CREATED symbol=%s alert_id=%s created_at=%s price=%s "
                         "stage=%s score=%s action=updated",
                         sym,
                         alert.alert_id,
                         alert.created_at,
-                        alert.price,
-                        alert.stage,
-                        alert.score,
+                        updated.price,
+                        updated.stage,
+                        updated.score,
                     )
-                    return alert
+                    return updated
 
             alert_id = str(uuid.uuid4())[:12]
             alert = JumpAlert(
@@ -74,13 +112,7 @@ class JumpAlertRegistry:
                 name=sig.name or sym,
                 created_at=created_at,
                 expires_at=expires_at,
-                price=sig.current_price,
-                change_percent=sig.change_percent,
-                stage=stage,
-                score=score,
-                ai_signal=sig.status,
-                status="ACTIVE",
-                status_reason_ar=reason,
+                **payload,
             )
             self._alerts[alert_id] = alert
 
@@ -131,13 +163,55 @@ class JumpAlertRegistry:
                 reverse=True,
             )
 
+    def get_qualified_alerts(self, *, limit: int | None = None) -> list[JumpAlert]:
+        """Only JUMP_QUALIFIED + JUMP_ALERT_CREATED alerts for UI display."""
+        self.purge_expired()
+        cap = limit if limit is not None else JUMP_ALERT_DISPLAY_LIMIT
+        with self._lock:
+            qualified = [
+                a
+                for a in self._alerts.values()
+                if a.status == "ACTIVE"
+                and a.jump_qualified
+                and a.jump_alert_created
+                and a.ai_signal in QUALIFIED_JUMP_SIGNALS
+                and not a.is_too_late
+            ]
+        return sorted(qualified, key=lambda a: a.score, reverse=True)[:cap]
+
+    def count_jump_qualified(self) -> int:
+        self.purge_expired()
+        with self._lock:
+            return sum(
+                1
+                for a in self._alerts.values()
+                if a.status == "ACTIVE" and a.jump_qualified
+            )
+
+    def count_jump_alert_created(self) -> int:
+        self.purge_expired()
+        with self._lock:
+            return sum(
+                1
+                for a in self._alerts.values()
+                if a.status == "ACTIVE" and a.jump_alert_created
+            )
+
     def get_history(self, *, limit: int = 50) -> list[JumpAlert]:
         with self._lock:
             return list(reversed(self._history[-limit:]))
 
     def alert_to_opportunity(self, alert: JumpAlert) -> StockOpportunity:
-        is_entry = alert.ai_signal in ("EARLY_ENTRY", "HIGH_CONVICTION_EARLY", "CONFIRMED_ENTRY")
-        prefix = "🚀 قفزة محفوظة | "
+        timing = _timing_label_ar(alert.timing, is_too_late=alert.is_too_late)
+        prefix = "🚀 قفزة مؤكدة | "
+        detail = (
+            f"{prefix}{alert.jump_type or alert.stage} | "
+            f"Entry ${alert.entry_low:.2f} | Stop ${alert.stop_loss:.2f} | "
+            f"TP1 ${alert.tp1:.2f} | TP2 ${alert.tp2:.2f} | "
+            f"RVOL {alert.rvol:.1f}x | VolAcc {alert.volume_acceleration:.2f} | "
+            f"Trigger ${alert.trigger_price:.2f} | {timing} | "
+            f"{alert.status_reason_ar or ''}"
+        )
         return StockOpportunity(
             symbol=alert.symbol,
             name=alert.name or alert.symbol,
@@ -146,13 +220,13 @@ class JumpAlertRegistry:
             score=alert.score,
             trend="صاعد" if alert.change_percent > 0.5 else "محايد",
             risk_level="متوسط",
-            status="شراء" if is_entry else "انتظار",
+            status="شراء",
             ai_signal=alert.ai_signal or "EARLY_ENTRY",
             confidence=0.0,
             confirmed_factors=0,
             total_factors=17,
-            safety_passed=is_entry,
-            status_reason_ar=prefix + (alert.status_reason_ar or f"Stage {alert.stage}"),
+            safety_passed=True,
+            status_reason_ar=detail.strip(),
             is_sticky_jump_alert=True,
             jump_alert_id=alert.alert_id,
         )
@@ -163,65 +237,34 @@ class JumpAlertRegistry:
         *,
         limit: int,
     ) -> OpportunitiesResponse:
-        """Merge active registry alerts into opportunities; log status per alert."""
+        """Attach qualified jump alerts only — do not mix into opportunities list."""
         self.purge_expired()
-        active = self.get_active_alerts()
-        by_symbol: dict[str, StockOpportunity] = {}
+        display_limit = min(JUMP_ALERT_DISPLAY_LIMIT, limit)
+        display_alerts = self.get_qualified_alerts(limit=display_limit)
+        display_symbols = {a.symbol.upper() for a in display_alerts}
 
-        for opp in response.opportunities:
-            by_symbol[opp.symbol.upper()] = opp
+        for alert in display_alerts:
+            self._log_status(
+                alert,
+                still_stored=True,
+                still_returned_by_api=True,
+                displayed_by_ui=True,
+                removal_reason="",
+            )
 
-        for alert in active:
-            sym = alert.symbol.upper()
-            if sym in by_symbol:
-                existing = by_symbol[sym]
-                if not existing.jump_alert_id:
-                    by_symbol[sym] = existing.model_copy(
-                        update={
-                            "is_sticky_jump_alert": True,
-                            "jump_alert_id": alert.alert_id,
-                        }
-                    )
-                self._log_status(
-                    alert,
-                    still_stored=True,
-                    still_returned_by_api=True,
-                    displayed_by_ui=True,
-                    removal_reason="",
-                )
-            else:
-                by_symbol[sym] = self.alert_to_opportunity(alert)
-                self._log_status(
-                    alert,
-                    still_stored=True,
-                    still_returned_by_api=True,
-                    displayed_by_ui=True,
-                    removal_reason="",
-                )
-
-        ranked = sorted(
-            by_symbol.values(),
-            key=lambda o: (o.is_sticky_jump_alert, o.score),
-            reverse=True,
-        )
-        merged = ranked[:limit]
-        merged_symbols = {o.symbol.upper() for o in merged}
-
-        for alert in active:
-            if alert.symbol.upper() not in merged_symbols:
-                self._log_status(
-                    alert,
-                    still_stored=True,
-                    still_returned_by_api=False,
-                    displayed_by_ui=False,
-                    removal_reason="NOT_RETURNED_BY_API",
-                )
+        for alert in self.get_active_alerts():
+            if alert.symbol.upper() in display_symbols:
+                continue
+            self._log_status(
+                alert,
+                still_stored=True,
+                still_returned_by_api=False,
+                displayed_by_ui=False,
+                removal_reason="NOT_QUALIFIED_FOR_DISPLAY",
+            )
 
         data = response.model_dump()
-        data["opportunities"] = merged
-        data["jump_alerts"] = active
-        if merged and data.get("api_status") == "NO_OPPORTUNITIES":
-            data["api_status"] = "OK"
+        data["jump_alerts"] = display_alerts
         return OpportunitiesResponse(**data)
 
     def log_refresh_cycle(
@@ -232,21 +275,21 @@ class JumpAlertRegistry:
     ) -> None:
         """Log alert status after a background scan refresh."""
         self.purge_expired()
+        display_symbols = {a.symbol.upper() for a in self.get_qualified_alerts()}
         for alert in self.get_active_alerts():
             sym = alert.symbol.upper()
-            in_scan = sym in scan_opportunity_symbols
-            in_merged = sym in merged_symbols
-            if in_merged:
+            in_display = sym in display_symbols
+            if in_display:
                 reason = ""
-            elif in_scan:
-                reason = "FILTERED_FROM_MERGE"
+            elif sym in scan_opportunity_symbols:
+                reason = "NOT_QUALIFIED_FOR_DISPLAY"
             else:
-                reason = "OVERWRITTEN_BY_REFRESH"
+                reason = "NOT_IN_SCAN"
             self._log_status(
                 alert,
                 still_stored=True,
-                still_returned_by_api=in_merged,
-                displayed_by_ui=in_merged,
+                still_returned_by_api=in_display,
+                displayed_by_ui=in_display,
                 removal_reason=reason,
             )
 

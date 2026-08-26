@@ -183,6 +183,7 @@ PREMOVE_BAR_CACHE_MAX: int = int(os.getenv("PREMOVE_BAR_CACHE_MAX", "200"))
 
 # Jump Alert Registry — sticky alerts independent of scan snapshot
 JUMP_ALERT_TTL_SECONDS: int = int(os.getenv("JUMP_ALERT_TTL_SECONDS", "1800"))
+JUMP_ALERT_DISPLAY_LIMIT: int = int(os.getenv("JUMP_ALERT_DISPLAY_LIMIT", "3"))
 
 # API snapshot cache + memory bounds (performance only — no signal logic)
 SYMBOL_CACHE_MAX_ENTRIES: int = int(os.getenv("SYMBOL_CACHE_MAX_ENTRIES", "400"))

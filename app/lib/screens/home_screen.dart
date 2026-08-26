@@ -10,6 +10,7 @@ import '../models/opportunity_now.dart';
 import '../services/api_service.dart';
 import '../services/app_state.dart';
 import '../theme/app_theme.dart';
+import '../widgets/jump_alert_card.dart';
 import '../widgets/stock_card.dart';
 import '../widgets/market_pulse_card.dart';
 import '../widgets/extended_alert_card.dart';
@@ -36,39 +37,15 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _liveTimer;
 
   static const _pollSeconds = 12;
-  final Map<String, JumpAlert> _stickyJumpAlerts = {};
+  static const _jumpDisplayLimit = 3;
 
-  OpportunitiesDashboard _mergeStickyDashboard(OpportunitiesDashboard dashboard) {
-    for (final alert in dashboard.jumpAlerts) {
-      if (alert.isActive && !alert.isExpired) {
-        _stickyJumpAlerts[alert.symbol] = alert;
-      }
-    }
-    _stickyJumpAlerts.removeWhere((_, alert) => alert.isExpired);
-
-    if (_stickyJumpAlerts.isEmpty) return dashboard;
-
-    final bySymbol = <String, StockOpportunity>{};
-    for (final opp in dashboard.opportunities) {
-      bySymbol[opp.symbol] = opp;
-    }
-    for (final alert in _stickyJumpAlerts.values) {
-      bySymbol.putIfAbsent(alert.symbol, alert.toStockOpportunity);
-    }
-
-    final merged = bySymbol.values.toList()
-      ..sort((a, b) {
-        if (a.isStickyJumpAlert != b.isStickyJumpAlert) {
-          return a.isStickyJumpAlert ? -1 : 1;
-        }
-        return b.score.compareTo(a.score);
-      });
-
+  OpportunitiesDashboard _normalizeJumpDashboard(OpportunitiesDashboard dashboard) {
+    final jumps = dashboard.realJumpAlerts.take(_jumpDisplayLimit).toList();
     return OpportunitiesDashboard(
       marketStatus: dashboard.marketStatus,
-      opportunities: merged,
+      opportunities: dashboard.opportunities,
       watchlistCandidates: dashboard.watchlistCandidates,
-      jumpAlerts: _stickyJumpAlerts.values.toList(),
+      jumpAlerts: jumps,
       explanation: dashboard.explanation,
       noSignalReason: dashboard.noSignalReason,
       debug: dashboard.debug,
@@ -155,12 +132,12 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _fetchJumpAlerts() async {
     try {
       final dashboard = await _api.fetchOpportunitiesDashboard(
-        limit: 10,
+        limit: _jumpDisplayLimit,
         backgroundRefresh: false,
       );
       if (mounted) {
         setState(() {
-          _dashboard = _mergeStickyDashboard(dashboard);
+          _dashboard = _normalizeJumpDashboard(dashboard);
           _error = null;
         });
       }
@@ -366,20 +343,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildJumpAlertsSection() {
-    final jumpItems = (_dashboard?.jumpAlerts ?? [])
-        .where((a) => a.isActive && !a.isExpired)
-        .map((a) => a.toStockOpportunity())
-        .toList();
-    final sticky = (_dashboard?.opportunities ?? [])
-        .where((o) => o.isStickyJumpAlert)
-        .toList();
-    final items = sticky.isNotEmpty ? sticky : jumpItems;
+    final items = (_dashboard?.realJumpAlerts ?? []).take(_jumpDisplayLimit).toList();
 
     if (items.isEmpty) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 16),
         child: Text(
-          'لا توجد قفزات Jump نشطة — المحرك يعمل في الخلفية',
+          'لا توجد قفزة مؤكدة الآن',
           textAlign: TextAlign.center,
           style: TextStyle(color: AppTheme.textSecondary),
         ),
@@ -390,23 +360,19 @@ class _HomeScreenState extends State<HomeScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SectionHeader(
-          title: 'قفزات Jump',
-          subtitle: 'تنبيهات محفوظة من محرك القفزات',
+          title: 'القفزات الحقيقية',
+          subtitle: 'JUMP_QUALIFIED — من 1 إلى 3 قفزات مؤكدة فقط',
         ),
         ...List.generate(items.length, (i) {
-          final stock = items[i];
-          return StockCard(
-            stock: stock,
+          final alert = items[i];
+          return JumpAlertCard(
+            alert: alert,
             rank: i + 1,
-            onTap: () => _openAnalysis(stock.symbol),
+            onTap: () => _openAnalysis(alert.symbol),
           );
         }),
       ],
     );
-  }
-
-  Widget _buildOpportunitiesSection() {
-    return _buildJumpAlertsSection();
   }
 
   @override
@@ -435,6 +401,8 @@ class _HomeScreenState extends State<HomeScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            _buildJumpAlertsSection(),
+            const SizedBox(height: 16),
             _buildHeroBanner(showingWatchlist),
             const SizedBox(height: 12),
             ExtendedAlertHomeCard(alert: _opportunityNow?.extendedAlert),
@@ -465,8 +433,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            _buildOpportunitiesSection(),
-            const SizedBox(height: 8),
             const Text(
               'للمتابعة فقط وليس توصية استثمارية',
               style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),

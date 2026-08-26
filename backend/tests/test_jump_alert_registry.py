@@ -1,4 +1,4 @@
-"""Tests for Jump Alert Registry — sticky alerts across refresh cycles."""
+"""Tests for Jump Alert Registry — real jumps only in jump_alerts."""
 
 from __future__ import annotations
 
@@ -7,18 +7,19 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from models.pre_move import (
+    PreMoveBreakoutMetrics,
+    PreMoveCompressionMetrics,
+    PreMoveEarlyActivityMetrics,
+    PreMoveLateMoveMetrics,
+    PreMoveLiquidityMetrics,
+    PreMoveNewsMetrics,
     PreMoveSignal,
     PreMoveStageProgressionMetrics,
     PreMoveVolumeMetrics,
-    PreMoveLiquidityMetrics,
-    PreMoveLateMoveMetrics,
     PreMoveVwapMetrics,
-    PreMoveBreakoutMetrics,
-    PreMoveNewsMetrics,
-    PreMoveCompressionMetrics,
-    PreMoveEarlyActivityMetrics,
 )
 from models.scanner import OpportunitiesResponse
+from models.stock import StockOpportunity
 from services.jump_alert_registry import JumpAlertRegistry
 
 
@@ -29,6 +30,8 @@ def _make_signal(
     price: float = 4.25,
     status: str = "EARLY_ENTRY",
     lifecycle: str = "EARLY_ENTRY",
+    validated: bool = True,
+    too_late: bool = False,
 ) -> PreMoveSignal:
     return PreMoveSignal(
         signal_id=f"{symbol}:2026-08-26",
@@ -39,19 +42,27 @@ def _make_signal(
         pre_move_score=score,
         status=status,
         lifecycle=lifecycle,
+        entry_low=price,
+        entry_high=price * 1.01,
+        stop_loss=price * 0.95,
+        tp1=price * 1.05,
+        tp2=price * 1.10,
+        trigger_price=price * 1.02,
+        risk_reward=2.0,
         stage_progression=PreMoveStageProgressionMetrics(
             stage_lifecycle=lifecycle,
             stage_progression_score=float(score),
+            persistence_minutes=12,
         ),
-        volume=PreMoveVolumeMetrics(),
+        volume=PreMoveVolumeMetrics(rvol=2.5, volume_acceleration_1m=1.8),
         liquidity=PreMoveLiquidityMetrics(liquidity_score=70),
-        late_move=PreMoveLateMoveMetrics(),
+        late_move=PreMoveLateMoveMetrics(is_too_late=too_late),
         vwap=PreMoveVwapMetrics(),
         breakout=PreMoveBreakoutMetrics(),
         news=PreMoveNewsMetrics(),
         compression=PreMoveCompressionMetrics(),
         early_activity=PreMoveEarlyActivityMetrics(),
-        validated=True,
+        validated=validated,
         reason="test setup",
     )
 
@@ -68,60 +79,76 @@ def test_jump_alert_created_and_logged(registry: JumpAlertRegistry, caplog):
     with caplog.at_level("INFO"):
         alert = registry.create_from_signal(sig)
 
+    assert alert is not None
     assert alert.alert_id
     assert alert.symbol == "BTCT"
     assert alert.status == "ACTIVE"
+    assert alert.jump_qualified is True
+    assert alert.jump_alert_created is True
     assert any("JUMP_ALERT_CREATED" in r.message for r in caplog.records)
-    assert registry.get_active_alerts()[0].alert_id == alert.alert_id
 
 
-def test_merge_keeps_alert_when_scan_empty(registry: JumpAlertRegistry, caplog):
+def test_merge_returns_jump_alerts_not_opportunities(registry: JumpAlertRegistry):
     sig = _make_signal("DNUT", score=76, price=3.49)
     registry.create_from_signal(sig)
 
-    empty = OpportunitiesResponse(
+    scan = OpportunitiesResponse(
         market_status="REGULAR",
-        opportunities=[],
-        api_status="NO_OPPORTUNITIES",
+        opportunities=[
+            StockOpportunity(
+                symbol="OTHER",
+                name="Other",
+                price=1.0,
+                change_percent=5.0,
+                score=50,
+                trend="صاعد",
+                risk_level="متوسط",
+                status="انتظار",
+                ai_signal="Wait",
+                confidence=0.0,
+            )
+        ],
+        api_status="OK",
     )
 
-    with caplog.at_level("INFO"):
-        merged = registry.merge_into_response(empty, limit=20)
+    merged = registry.merge_into_response(scan, limit=20)
 
-    assert len(merged.opportunities) == 1
-    assert merged.opportunities[0].symbol == "DNUT"
-    assert merged.opportunities[0].is_sticky_jump_alert is True
-    assert merged.opportunities[0].jump_alert_id
     assert len(merged.jump_alerts) == 1
-    assert merged.api_status == "OK"
-    assert any("JUMP_ALERT_STATUS" in r.message for r in caplog.records)
+    assert merged.jump_alerts[0].symbol == "DNUT"
+    assert all(o.symbol != "DNUT" or not o.is_sticky_jump_alert for o in merged.opportunities)
 
 
-def test_alert_survives_multiple_refresh_cycles(registry: JumpAlertRegistry):
-    sig = _make_signal("MSTZ", score=82, price=6.10)
-    alert = registry.create_from_signal(sig)
+def test_max_three_displayed_sorted_by_score(registry: JumpAlertRegistry):
+    for sym, score in [("A", 70), ("B", 90), ("C", 80), ("D", 95)]:
+        registry.create_from_signal(_make_signal(sym, score=score, price=2.0 + score / 100))
 
-    for cycle in range(3):
-        empty = OpportunitiesResponse(
-            market_status="REGULAR",
-            opportunities=[],
-            api_status="NO_OPPORTUNITIES",
-        )
-        merged = registry.merge_into_response(empty, limit=20)
-        assert any(o.symbol == "MSTZ" for o in merged.opportunities), f"cycle {cycle + 1}"
-        registry.log_refresh_cycle(
-            scan_opportunity_symbols=set(),
-            merged_symbols={"MSTZ"},
-        )
-
-    active = registry.get_active_alerts()
-    assert len(active) == 1
-    assert active[0].alert_id == alert.alert_id
+    merged = registry.merge_into_response(
+        OpportunitiesResponse(market_status="REGULAR", opportunities=[]),
+        limit=20,
+    )
+    assert len(merged.jump_alerts) == 3
+    assert [a.symbol for a in merged.jump_alerts] == ["D", "B", "C"]
 
 
-def test_expired_alert_removed_with_reason(registry: JumpAlertRegistry, caplog, monkeypatch):
+def test_early_watch_not_in_display(registry: JumpAlertRegistry):
+    sig = _make_signal("EW", status="EARLY_WATCH", lifecycle="EARLY_WATCH")
+    assert registry.create_from_signal(sig) is None
+    merged = registry.merge_into_response(
+        OpportunitiesResponse(market_status="REGULAR", opportunities=[]),
+        limit=20,
+    )
+    assert merged.jump_alerts == []
+
+
+def test_too_late_not_in_display(registry: JumpAlertRegistry):
+    sig = _make_signal("LATE", too_late=True)
+    assert registry.create_from_signal(sig) is None
+
+
+def test_expired_alert_removed_with_reason(registry: JumpAlertRegistry, caplog):
     sig = _make_signal("XPON", score=80)
     alert = registry.create_from_signal(sig)
+    assert alert is not None
 
     past = datetime.now(timezone.utc) - timedelta(seconds=1)
     with registry._lock:
@@ -131,34 +158,11 @@ def test_expired_alert_removed_with_reason(registry: JumpAlertRegistry, caplog, 
     with caplog.at_level("INFO"):
         registry.purge_expired()
 
-    assert registry.get_active_alerts() == []
-    assert any(
-        "JUMP_ALERT_STATUS" in r.message and "removal_reason=EXPIRED" in r.message
-        for r in caplog.records
-    )
+    assert registry.get_qualified_alerts() == []
 
 
-def test_full_pipeline_created_stored_api_displayed(registry: JumpAlertRegistry):
-    """CREATED → STORED → API RETURNED → still present after refresh."""
-    sig = _make_signal("TESTJ", score=90, price=2.50)
-    created = registry.create_from_signal(sig)
-
-    assert created.alert_id in registry._alerts
-
-    scan_with_other = OpportunitiesResponse(
-        market_status="REGULAR",
-        opportunities=[],
-        api_status="NO_OPPORTUNITIES",
-    )
-    api1 = registry.merge_into_response(scan_with_other, limit=20)
-    assert api1.opportunities[0].symbol == "TESTJ"
-    assert api1.opportunities[0].jump_alert_id == created.alert_id
-
-    scan_overwrite = OpportunitiesResponse(
-        market_status="REGULAR",
-        opportunities=[],
-        api_status="NO_OPPORTUNITIES",
-    )
-    api2 = registry.merge_into_response(scan_overwrite, limit=20)
-    assert any(o.symbol == "TESTJ" for o in api2.opportunities)
-    assert api2.jump_alerts[0].status == "ACTIVE"
+def test_counts_qualified_and_created(registry: JumpAlertRegistry):
+    registry.create_from_signal(_make_signal("Q1", score=88))
+    registry.create_from_signal(_make_signal("Q2", score=77))
+    assert registry.count_jump_qualified() == 2
+    assert registry.count_jump_alert_created() == 2

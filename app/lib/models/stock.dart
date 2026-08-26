@@ -173,6 +173,21 @@ class JumpAlert {
   final String aiSignal;
   final String status;
   final String statusReasonAr;
+  final bool jumpQualified;
+  final bool jumpAlertCreated;
+  final String jumpType;
+  final double entryLow;
+  final double entryHigh;
+  final double stopLoss;
+  final double tp1;
+  final double tp2;
+  final double rvol;
+  final double volumeAcceleration;
+  final double triggerPrice;
+  final String timing;
+  final int persistenceMinutes;
+  final double riskReward;
+  final bool isTooLate;
 
   const JumpAlert({
     required this.alertId,
@@ -187,6 +202,21 @@ class JumpAlert {
     required this.aiSignal,
     required this.status,
     required this.statusReasonAr,
+    this.jumpQualified = false,
+    this.jumpAlertCreated = false,
+    this.jumpType = '',
+    this.entryLow = 0,
+    this.entryHigh = 0,
+    this.stopLoss = 0,
+    this.tp1 = 0,
+    this.tp2 = 0,
+    this.rvol = 0,
+    this.volumeAcceleration = 0,
+    this.triggerPrice = 0,
+    this.timing = 'NORMAL',
+    this.persistenceMinutes = 0,
+    this.riskReward = 0,
+    this.isTooLate = false,
   });
 
   factory JumpAlert.fromJson(Map<String, dynamic> json) {
@@ -203,8 +233,31 @@ class JumpAlert {
       aiSignal: json['ai_signal'] as String? ?? '',
       status: json['status'] as String? ?? 'ACTIVE',
       statusReasonAr: json['status_reason_ar'] as String? ?? '',
+      jumpQualified: readJsonBool(json, ['jump_qualified', 'jumpQualified']),
+      jumpAlertCreated: readJsonBool(json, ['jump_alert_created', 'jumpAlertCreated']),
+      jumpType: json['jump_type'] as String? ?? '',
+      entryLow: (json['entry_low'] as num?)?.toDouble() ?? 0,
+      entryHigh: (json['entry_high'] as num?)?.toDouble() ?? 0,
+      stopLoss: (json['stop_loss'] as num?)?.toDouble() ?? 0,
+      tp1: (json['tp1'] as num?)?.toDouble() ?? 0,
+      tp2: (json['tp2'] as num?)?.toDouble() ?? 0,
+      rvol: (json['rvol'] as num?)?.toDouble() ?? 0,
+      volumeAcceleration: (json['volume_acceleration'] as num?)?.toDouble() ?? 0,
+      triggerPrice: (json['trigger_price'] as num?)?.toDouble() ?? 0,
+      timing: json['timing'] as String? ?? 'NORMAL',
+      persistenceMinutes: (json['persistence_minutes'] as num?)?.toInt() ?? 0,
+      riskReward: (json['risk_reward'] as num?)?.toDouble() ?? 0,
+      isTooLate: readJsonBool(json, ['is_too_late', 'isTooLate']),
     );
   }
+
+  bool get isRealJump =>
+      isActive &&
+      !isExpired &&
+      jumpQualified &&
+      jumpAlertCreated &&
+      !isTooLate &&
+      (aiSignal == 'EARLY_ENTRY' || aiSignal == 'HIGH_CONVICTION_EARLY');
 
   bool get isActive => status == 'ACTIVE';
 
@@ -352,14 +405,15 @@ class OpportunitiesDashboard {
     final jumpRaw = json['jump_alerts'] as List<dynamic>? ?? [];
     final jumpAlerts = jumpRaw
         .map((e) => JumpAlert.fromJson(e as Map<String, dynamic>))
-        .where((a) => a.isActive && !a.isExpired)
-        .toList();
+        .where((a) => a.isRealJump)
+        .toList()
+      ..sort((a, b) => b.score.compareTo(a.score));
+    if (jumpAlerts.length > 3) {
+      jumpAlerts.removeRange(3, jumpAlerts.length);
+    }
     var opportunities = live
         .map((e) => StockOpportunity.fromJson(e as Map<String, dynamic>))
         .toList();
-    if (opportunities.isEmpty && jumpAlerts.isNotEmpty) {
-      opportunities = jumpAlerts.map((a) => a.toStockOpportunity()).toList();
-    }
     return OpportunitiesDashboard(
       marketStatus: json['market_status'] as String? ?? 'CLOSED',
       opportunities: opportunities,
@@ -379,13 +433,12 @@ class OpportunitiesDashboard {
 
   List<StockOpportunity> get displayItems {
     if (opportunities.isNotEmpty) return opportunities;
-    if (jumpAlerts.isNotEmpty) {
-      return jumpAlerts.map((a) => a.toStockOpportunity()).toList();
-    }
     return watchlistCandidates;
   }
 
-  bool get hasActiveJumpAlerts => jumpAlerts.any((a) => a.isActive && !a.isExpired);
+  List<JumpAlert> get realJumpAlerts => jumpAlerts.where((a) => a.isRealJump).toList();
+
+  bool get hasActiveJumpAlerts => realJumpAlerts.isNotEmpty;
 
   bool get showingWatchlist =>
       opportunities.isEmpty && watchlistCandidates.isNotEmpty && !hasActiveJumpAlerts;
