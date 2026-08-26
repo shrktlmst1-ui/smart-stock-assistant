@@ -234,6 +234,47 @@ def test_premarket_uses_premarket_price(_mock_session):
     assert sp.source == "premarket"
 
 
+def test_premarket_to_regular_preserves_jump_caches():
+    """PRE_MARKET→REGULAR must not wipe WS ticks or opportunities snapshot."""
+    import services.session_price as sp_mod
+    from services.live_price_registry import live_price_registry
+    from services.snapshot_cache_service import invalidate_opportunities_cache
+
+    sp_mod._last_known_session = "PRE_MARKET"
+    live_price_registry.ingest_trade("BTCT", 2.10, exchange_ts_ns=_now_ns())
+    assert live_price_registry.get_tick("BTCT") is not None
+
+    with patch("services.session_price.get_us_market_session", return_value="REGULAR"):
+        with patch(
+            "services.snapshot_cache_service.invalidate_opportunities_cache",
+        ) as mock_invalidate_opps:
+            session = sp_mod.ensure_session_cache_valid()
+
+    assert session == "REGULAR"
+    assert live_price_registry.get_tick("BTCT") is not None
+    mock_invalidate_opps.assert_not_called()
+    assert sp_mod._last_known_session == "REGULAR"
+
+
+def test_other_session_transition_still_clears_jump_caches():
+    """Non PRE_MARKET→REGULAR transitions must still invalidate jump caches."""
+    import services.session_price as sp_mod
+    from services.live_price_registry import live_price_registry
+
+    sp_mod._last_known_session = "REGULAR"
+    live_price_registry.ingest_trade("BTCT", 2.10, exchange_ts_ns=_now_ns())
+
+    with patch("services.session_price.get_us_market_session", return_value="AFTER_HOURS"):
+        with patch(
+            "services.snapshot_cache_service.invalidate_opportunities_cache",
+        ) as mock_invalidate_opps:
+            with patch.object(live_price_registry, "clear_execution_prices") as mock_clear:
+                sp_mod.ensure_session_cache_valid()
+
+    mock_invalidate_opps.assert_called_once()
+    mock_clear.assert_called_once()
+
+
 def test_freshness_constants():
     assert REGULAR_LAST_TRADE_MAX_AGE_SECONDS == 15
     assert REGULAR_QUOTE_MAX_AGE_SECONDS == 5

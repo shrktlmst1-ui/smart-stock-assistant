@@ -592,8 +592,19 @@ def resolve_jump_execution_price(
     return sp, diag
 
 
-def invalidate_price_caches() -> None:
+def invalidate_price_caches(
+    *,
+    previous: MarketSession | None = None,
+    current: MarketSession | None = None,
+) -> None:
     """Drop cached symbol/bar data when market session changes."""
+    preserve_jump_continuity = previous == "PRE_MARKET" and current == "REGULAR"
+    if preserve_jump_continuity:
+        logger.info(
+            "[JUMP] PRE_MARKET→REGULAR: preserving jump WS prices and opportunities cache "
+            "(stage progression + alert registry unchanged)"
+        )
+
     try:
         from services import stock_service
 
@@ -618,21 +629,27 @@ def invalidate_price_caches() -> None:
     except Exception as exc:
         logger.debug("pre_move bar cache clear skipped: %s", exc)
 
-    try:
-        from services.snapshot_cache_service import invalidate_opportunities_cache
+    if not preserve_jump_continuity:
+        try:
+            from services.snapshot_cache_service import invalidate_opportunities_cache
 
-        invalidate_opportunities_cache()
-    except Exception as exc:
-        logger.debug("opportunities cache clear skipped: %s", exc)
+            invalidate_opportunities_cache()
+        except Exception as exc:
+            logger.debug("opportunities cache clear skipped: %s", exc)
 
-    try:
-        from services.live_price_registry import live_price_registry
+        try:
+            from services.live_price_registry import live_price_registry
 
-        live_price_registry.clear_execution_prices()
-    except Exception as exc:
-        logger.debug("live_price_registry clear skipped: %s", exc)
+            live_price_registry.clear_execution_prices()
+        except Exception as exc:
+            logger.debug("live_price_registry clear skipped: %s", exc)
 
-    logger.info("Price caches invalidated on session transition")
+    logger.info(
+        "Price caches invalidated on session transition prev=%s current=%s jump_preserved=%s",
+        previous,
+        current,
+        preserve_jump_continuity,
+    )
 
 
 def ensure_session_cache_valid() -> MarketSession:
@@ -640,6 +657,6 @@ def ensure_session_cache_valid() -> MarketSession:
     global _last_known_session
     current = get_us_market_session()
     if _last_known_session is not None and _last_known_session != current:
-        invalidate_price_caches()
+        invalidate_price_caches(previous=_last_known_session, current=current)
     _last_known_session = current
     return current
