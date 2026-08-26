@@ -51,6 +51,14 @@ WEBSOCKET_ENABLED: bool = os.getenv(
     "WEBSOCKET_ENABLED", str(PLAN_WEBSOCKET_ENABLED.get(POLYGON_PLAN, True))
 ).lower() == "true"
 
+# Stocks WebSocket hub — batched subscriptions (avoids Polygon 1008 policy violations)
+WS_MAX_CONNECTIONS: int = int(os.getenv("WS_MAX_CONNECTIONS", "1"))
+WS_SYMBOLS_PER_SHARD: int = int(os.getenv("WS_SYMBOLS_PER_SHARD", "60"))
+WS_CHANNELS_PER_SUBSCRIBE_BATCH: int = int(os.getenv("WS_CHANNELS_PER_SUBSCRIBE_BATCH", "40"))
+WS_SUBSCRIBE_BATCH_DELAY_SEC: float = float(os.getenv("WS_SUBSCRIBE_BATCH_DELAY_SEC", "0.35"))
+WS_RESYNC_SECONDS: float = float(os.getenv("WS_RESYNC_SECONDS", "12"))
+WS_RECV_TIMEOUT_SECONDS: float = float(os.getenv("WS_RECV_TIMEOUT_SECONDS", "3"))
+
 DEFAULT_SYMBOLS: list[str] = [
     s.strip().upper()
     for s in os.getenv("WATCHLIST", "").split(",")
