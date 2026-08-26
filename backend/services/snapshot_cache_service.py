@@ -41,6 +41,8 @@ _cache_hits = 0
 _cache_misses = 0
 _refresh_skipped = 0
 _last_refresh_ms: float = 0.0
+_refresh_started_mono: float = 0.0
+MAX_REFRESH_SECONDS: float = 600.0
 
 _refresh_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="opp-snapshot")
 
@@ -232,6 +234,18 @@ def invalidate_opportunities_cache() -> None:
     logger.info("Opportunities snapshot cache cleared")
 
 
+def _release_stuck_refresh(reason: str) -> None:
+    """Self-heal if background refresh thread hung without clearing the guard."""
+    global _refresh_in_progress
+    with _refresh_guard:
+        if _refresh_in_progress:
+            _refresh_in_progress = False
+            from services.jump_engine_monitor import jump_engine_monitor
+
+            jump_engine_monitor.record_error(reason)
+            logger.error("[JUMP] Force-released stuck opportunities refresh: %s", reason)
+
+
 def schedule_opportunities_refresh(
     *,
     session: str | None = None,
@@ -239,26 +253,39 @@ def schedule_opportunities_refresh(
     snapshot_raw: dict | None = None,
 ) -> bool:
     """Single-flight background refresh — returns False if already running."""
-    global _refresh_in_progress, _refresh_skipped
+    global _refresh_in_progress, _refresh_skipped, _refresh_started_mono
 
     with _refresh_guard:
         if _refresh_in_progress:
-            _refresh_skipped += 1
-            logger.info("[PERF] concurrent_scans=0 refresh_skipped=%d", _refresh_skipped)
-            return False
+            age = time.monotonic() - _refresh_started_mono if _refresh_started_mono else 0.0
+            if age > MAX_REFRESH_SECONDS:
+                _release_stuck_refresh(f"refresh_timeout_{age:.0f}s")
+            else:
+                _refresh_skipped += 1
+                logger.info(
+                    "[JUMP] opportunities refresh skipped (in_progress %.0fs) skipped=%d",
+                    age,
+                    _refresh_skipped,
+                )
+                return False
         _refresh_in_progress = True
+        _refresh_started_mono = time.monotonic()
 
     def _job() -> None:
-        global _refresh_in_progress, _last_refresh_ms
+        global _refresh_in_progress, _last_refresh_ms, _refresh_started_mono
         t0 = time.monotonic()
         try:
             _run_refresh(session=session, state=state, snapshot_raw=snapshot_raw)
         except Exception as exc:
+            from services.jump_engine_monitor import jump_engine_monitor
+
+            jump_engine_monitor.record_error(f"refresh_failed:{type(exc).__name__}")
             logger.warning("[PERF] opportunities refresh failed: %s", type(exc).__name__)
         finally:
             _last_refresh_ms = round((time.monotonic() - t0) * 1000, 1)
             with _refresh_guard:
                 _refresh_in_progress = False
+                _refresh_started_mono = 0.0
             logger.info("[PERF] scanner_total_ms=%.0f concurrent_scans=0", _last_refresh_ms)
 
     _refresh_executor.submit(_job)

@@ -54,6 +54,7 @@ class FeedStatus:
     last_trade_at: datetime | None = None
     last_quote_at: datetime | None = None
     last_disconnect_at: datetime | None = None
+    last_message_at: datetime | None = None
     reconnect_count: int = 0
     trades_received: int = 0
     quotes_received: int = 0
@@ -162,6 +163,14 @@ class LivePriceRegistry:
         self._quotes[sym] = tick
         self._status.quotes_received += 1
         self._status.last_quote_at = now
+
+    def note_message_received(self) -> None:
+        """Track last inbound WS payload for Jump Engine heartbeat."""
+        self._status.last_message_at = datetime.now(timezone.utc)
+
+    def last_message_iso(self) -> str:
+        ts = self._status.last_message_at
+        return ts.isoformat() if ts else ""
 
     def get_tick(self, symbol: str) -> LivePriceTick | None:
         return self._ticks.get(symbol.upper())

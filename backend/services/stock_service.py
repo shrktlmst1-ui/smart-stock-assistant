@@ -299,8 +299,6 @@ async def _prep_snapshot_job(
     price, volume, change, change_pct, sp = _resolve_snapshot_price(snap_data)
     if sp.is_stale or price <= 0:
         return None
-    from services.session_price import parse_snapshot_price as _session_parse
-    _, _, _, _, sp = _session_parse(snap_data, session=ensure_session_cache_valid())
     try:
         async with asyncio.timeout(PER_SYMBOL_PREP_TIMEOUT_SEC):
             await _ensure_bars(symbol, client, cache)

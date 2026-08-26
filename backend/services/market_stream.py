@@ -18,6 +18,7 @@ from config import (
     get_polygon_api_key,
 )
 from services.connection_service import get_connection_status, _wait_ws_auth
+from services.jump_engine_monitor import jump_engine_monitor
 from services.live_confirmation_engine import LIVE_MONITOR_POOL, live_confirmation_engine
 from services.live_price_registry import live_price_registry
 from services.market_scanner_service import market_scanner
@@ -35,6 +36,7 @@ class MarketStream:
         self._running = False
         self._task: asyncio.Task | None = None
         self._tick_task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task | None = None
         self._broadcast: BroadcastFn | None = None
         self._snapshots: dict[str, dict] = {}
         self.mode: str = "scanner"
@@ -59,6 +61,7 @@ class MarketStream:
         use_ws = WEBSOCKET_ENABLED and status.websocket_available
 
         self._tick_task = asyncio.create_task(self._run_fast_tick())
+        self._watchdog_task = asyncio.create_task(self._run_watchdog())
 
         if use_ws:
             self.mode = "websocket_scanner"
@@ -73,7 +76,8 @@ class MarketStream:
 
     async def stop(self) -> None:
         self._running = False
-        for task in (self._task, self._tick_task):
+        jump_engine_monitor.mark_stopped()
+        for task in (self._task, self._tick_task, self._watchdog_task):
             if task and not task.done():
                 task.cancel()
                 try:
@@ -120,12 +124,46 @@ class MarketStream:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
+    async def _run_watchdog(self) -> None:
+        """Self-healing — restart scanner/WS tasks if they exit unexpectedly."""
+        while self._running:
+            await asyncio.sleep(30)
+            if not self._running:
+                break
+            if self._tick_task and self._tick_task.done():
+                exc = self._tick_task.exception()
+                err = f"tick_task_died:{exc!r}" if exc else "tick_task_died"
+                jump_engine_monitor.record_error(err)
+                logger.error("[JUMP] Scanner tick task died (%s) — auto-restarting", exc)
+                self._tick_task = asyncio.create_task(self._run_fast_tick())
+            status = get_connection_status()
+            if WEBSOCKET_ENABLED and status.websocket_available:
+                if self._task is None or self._task.done():
+                    exc = self._task.exception() if self._task else None
+                    err = f"ws_task_died:{exc!r}" if exc else "ws_task_missing"
+                    jump_engine_monitor.record_error(err)
+                    logger.error("[JUMP] WebSocket task died (%s) — auto-restarting", exc)
+                    self.mode = "websocket_scanner"
+                    self._task = asyncio.create_task(self._run_websocket_with_fallback())
+
     async def _run_fast_tick(self) -> None:
         """Institutional scanner — full market coarse + deep top 20 every 15s."""
         await self._broadcast_status()
         while self._running:
             t0 = time.monotonic()
             try:
+                from services.snapshot_cache_service import cache_stats
+
+                cs = cache_stats()
+                jump_engine_monitor.tick_started(
+                    scanner_task_alive=True,
+                    websocket_connected=live_price_registry.status.connected,
+                    last_ws_message_time=live_price_registry.last_message_iso(),
+                    reconnect_count=live_price_registry.status.reconnect_count,
+                    refresh_in_progress=cs.get("refresh_in_progress", False),
+                    refresh_skipped=cs.get("refresh_skipped", 0),
+                )
+
                 state = await market_scanner.run_fast_tick()
                 self.last_tick_ms = state.last_tick_ms
 
@@ -150,9 +188,16 @@ class MarketStream:
                 except Exception as exc:
                     logger.debug("Opportunities snapshot refresh skipped: %s", type(exc).__name__)
 
+                debug = state.debug
+                jump_engine_monitor.tick_finished(
+                    scanned_count=debug.phase1_quick_scanned if debug else 0,
+                    candidate_count=debug.phase2_ranked_candidates if debug else 0,
+                )
+
                 if self.last_tick_ms > 30000:
                     logger.warning("Scanner tick slow: %.0fms (pool=%d)", self.last_tick_ms, state.candidate_pool)
             except Exception as e:
+                jump_engine_monitor.record_error(f"tick_error:{e}")
                 logger.error("Scanner tick error: %s", e)
             elapsed = time.monotonic() - t0
             await asyncio.sleep(max(0.0, SCANNER_TICK_SECONDS - elapsed))
@@ -172,6 +217,7 @@ class MarketStream:
         while self._running:
             try:
                 live_price_registry.note_reconnect()
+                jump_engine_monitor.record_reconnect()
                 await self._run_websocket()
                 backoff = 2.0
             except websockets.exceptions.ConnectionClosedError as e:
@@ -195,6 +241,7 @@ class MarketStream:
             backoff = min(max_backoff, backoff * 1.5)
 
     async def _handle_ws_payload(self, payload: list | dict) -> None:
+        live_price_registry.note_message_received()
         items = payload if isinstance(payload, list) else [payload]
         for item in items:
             if not isinstance(item, dict):

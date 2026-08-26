@@ -260,7 +260,7 @@ def run_opportunities_scans(
     with perf_timer("fast_scan", session=session):
         t0 = time.monotonic()
         try:
-            pre_move = sync_pre_move_scan(snapshot_raw)
+            pre_move = sync_pre_move_scan(snapshot_raw, session=session)
         except Exception as exc:
             logger.warning("Pre-Move scan failed: %s", type(exc).__name__)
             partial = True

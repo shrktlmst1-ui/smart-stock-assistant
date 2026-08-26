@@ -58,6 +58,7 @@ from services.pre_move_stage_store import clear_stale_states, get_or_create_stat
 from services.news_service import fetch_stock_news
 from services.scanner_filters import parse_snapshot_item
 from services.session_price import STALE_PRICE_REASON_AR, STALE_PRICE_STATUS, resolve_session_price
+from services.jump_engine_monitor import jump_engine_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,7 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
     from services.stock_service import get_client
 
     sym = candidate["symbol"]
+    jump_engine_monitor.log_stage2(sym)
     price = candidate["price"]
     change_pct = candidate["change_percent"]
     item = candidate["item"]
@@ -171,6 +173,7 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
 
             sp = resolve_session_price(item, session=session, nbbo=nbbo)  # type: ignore[arg-type]
             if sp.is_stale:
+                jump_engine_monitor.log_jump_rejected(sym, STALE_PRICE_STATUS)
                 return PreMoveSignal(
                     signal_id=f"{sym}:{now_iso[:10]}",
                     symbol=sym,
@@ -295,6 +298,7 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
 
     session_date = now_iso[:10]
     stage_state = get_or_create_state(sym, session_date)
+    prior_stage = stage_state.current_stage
     prior_snaps = stage_state.history()
     prior_peak = max((s.price for s in prior_snaps), default=price)
     if stage_state.base_price <= 0:
@@ -351,6 +355,23 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
         ),
         news_catalyst_score=news_m.news_catalyst_score,
     )
+
+    if prior_stage == "PRE_BREAKOUT":
+        ee_blocks = list(stage_metrics.ee_block_reasons or [])
+        if stage_metrics.ee_quality_blocks:
+            ee_blocks.extend(stage_metrics.ee_quality_blocks)
+        if new_lifecycle == "EARLY_ENTRY":
+            jump_engine_monitor.log_promoted_stage3(sym)
+        else:
+            reason = ";".join(ee_blocks) if ee_blocks else (
+                stage_metrics.regression_signals[0]
+                if stage_metrics.regression_signals
+                else f"lifecycle={new_lifecycle}"
+            )
+            jump_engine_monitor.log_rejected_stage3(sym, reason)
+    elif new_lifecycle == "PRE_BREAKOUT" and prior_stage != "PRE_BREAKOUT":
+        jump_engine_monitor.log_stage2(sym)
+
     stage_state = update_stage_state(sym, session_date, snap, new_lifecycle, stage_metrics)
 
     status = lifecycle_to_status(
@@ -414,6 +435,10 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
     sig.validated = ok
     if not ok:
         sig.rejection_reason = reject
+        if new_lifecycle in ("EARLY_ENTRY", "BREAKOUT_CONFIRMED") or sig.status in (
+            "EARLY_ENTRY", "HIGH_CONVICTION_EARLY",
+        ):
+            jump_engine_monitor.log_jump_rejected(sym, reject)
         if reject == "TOO_LATE_TO_CHASE":
             sig.status = "TOO_LATE_TO_CHASE"
             sig.emoji = status_emoji("TOO_LATE_TO_CHASE")
@@ -423,6 +448,10 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
     ):
         sig.rejection_reason = "LOW_LIQUIDITY"
         sig.validated = False
+        jump_engine_monitor.log_jump_rejected(sym, "LOW_LIQUIDITY")
+
+    if sig.validated and sig.status in ("EARLY_ENTRY", "HIGH_CONVICTION_EARLY"):
+        jump_engine_monitor.log_jump_qualified(sym)
 
     return sig
 
@@ -431,12 +460,13 @@ async def scan_pre_move_async(
     snapshot_raw: dict[str, dict] | None = None,
     *,
     deep_limit: int | None = None,
+    session: str | None = None,
 ) -> PreMoveScanResult:
     from services.market_scanner_service import market_scanner
 
     t0 = time.monotonic()
     stats = PreMoveScanStats()
-    session = get_us_market_session()
+    market_session = session or get_us_market_session()
 
     if not PREMOVE_ENABLED:
         return PreMoveScanResult(message="Pre-Move Predictor disabled")
@@ -445,7 +475,7 @@ async def scan_pre_move_async(
     if not raw:
         return PreMoveScanResult(message="No snapshot data")
 
-    candidates = _fast_filter(raw, PREMOVE_FAST_SCAN_LIMIT, session)
+    candidates = _fast_filter(raw, PREMOVE_FAST_SCAN_LIMIT, market_session)
     stats.scanned = min(len(raw), PREMOVE_FAST_SCAN_LIMIT)
     stats.early_candidates = len(candidates)
 
@@ -458,9 +488,10 @@ async def scan_pre_move_async(
     t_deep = time.monotonic()
     for cand in to_analyze:
         try:
-            sig = await _deep_analyze(cand, session)
+            sig = await _deep_analyze(cand, market_session)
         except Exception as exc:
-            logger.debug("[PREMOVE] %s analyze failed: %s", cand["symbol"], type(exc).__name__)
+            jump_engine_monitor.record_error(f"deep_analyze_{cand['symbol']}:{type(exc).__name__}")
+            logger.warning("[PREMOVE] %s analyze failed: %s", cand["symbol"], type(exc).__name__)
             continue
         if not sig:
             continue
@@ -573,9 +604,11 @@ def sync_pre_move_scan(
     snapshot_raw: dict[str, dict] | None = None,
     *,
     deep_limit: int | None = None,
+    session: str | None = None,
 ) -> PreMoveScanResult:
     try:
-        return _run_async(scan_pre_move_async(snapshot_raw, deep_limit=deep_limit))
+        return _run_async(scan_pre_move_async(snapshot_raw, deep_limit=deep_limit, session=session))
     except Exception as exc:
+        jump_engine_monitor.record_error(f"sync_scan:{type(exc).__name__}")
         logger.warning("[PREMOVE] scan failed: %s", type(exc).__name__)
         return PreMoveScanResult(message="Pre-Move scan failed")
