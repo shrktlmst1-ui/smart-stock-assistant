@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from analysis.early_upward_surge import relative_surge_from_signal
 from config import (
     PREMOVE_MIN_LIQUIDITY_SCORE,
     STAGE_BREAKOUT_NEAR_PCT,
@@ -60,7 +61,11 @@ def evaluate_upward_jump(sig: PreMoveSignal) -> tuple[bool, str]:
     rvol_ok = sig.volume.rvol >= STAGE_RVOL_MIN
     trade_vel = sig.early_activity.trade_velocity
     trade_vel_ok = trade_vel is None or trade_vel > 0
-    momentum_ok = sig.change_percent >= min(1.0, STAGE_EE_MIN_SESSION_CHANGE_PCT)
+    surge = relative_surge_from_signal(sig)
+    momentum_ok = sig.change_percent > 0 and (
+        surge
+        or sig.change_percent >= min(1.0, STAGE_EE_MIN_SESSION_CHANGE_PCT)
+    )
 
     evidence = [
         vwap_ok,

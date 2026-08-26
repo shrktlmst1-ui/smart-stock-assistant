@@ -668,8 +668,8 @@ def sync_extended_gap_detector() -> list[ExtendedGapDetection]:
 
     session = get_us_market_session()
     if session not in ("PRE_MARKET", "AFTER_HOURS"):
-        extended_gap_registry.reset()
-        return []
+        # Jump Engine stays armed — keep registry; extended gap scan only in extended hours.
+        return list(extended_gap_registry.all())
 
     news_by_symbol: dict[str, list] = {}
     for sym, snap in market_scanner._snapshots.items():

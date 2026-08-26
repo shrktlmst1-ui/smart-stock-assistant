@@ -256,23 +256,32 @@ def test_premarket_to_regular_preserves_jump_caches():
     assert sp_mod._last_known_session == "REGULAR"
 
 
-def test_other_session_transition_still_clears_jump_caches():
-    """Non PRE_MARKET→REGULAR transitions must still invalidate jump caches."""
+def test_all_session_transitions_preserve_jump_caches():
+    """Jump Engine must not wipe WS/opportunities cache on any session change."""
     import services.session_price as sp_mod
     from services.live_price_registry import live_price_registry
 
-    sp_mod._last_known_session = "REGULAR"
-    live_price_registry.ingest_trade("BTCT", 2.10, exchange_ts_ns=_now_ns())
+    transitions = [
+        ("PRE_MARKET", "REGULAR"),
+        ("REGULAR", "AFTER_HOURS"),
+        ("AFTER_HOURS", "CLOSED"),
+        ("CLOSED", "PRE_MARKET"),
+    ]
+    for previous, current in transitions:
+        sp_mod._last_known_session = previous
+        live_price_registry.ingest_trade("BTCT", 2.10, exchange_ts_ns=_now_ns())
 
-    with patch("services.session_price.get_us_market_session", return_value="AFTER_HOURS"):
-        with patch(
-            "services.snapshot_cache_service.invalidate_opportunities_cache",
-        ) as mock_invalidate_opps:
-            with patch.object(live_price_registry, "clear_execution_prices") as mock_clear:
-                sp_mod.ensure_session_cache_valid()
+        with patch("services.session_price.get_us_market_session", return_value=current):
+            with patch(
+                "services.snapshot_cache_service.invalidate_opportunities_cache",
+            ) as mock_invalidate_opps:
+                with patch.object(live_price_registry, "clear_execution_prices") as mock_clear:
+                    sp_mod.ensure_session_cache_valid()
 
-    mock_invalidate_opps.assert_called_once()
-    mock_clear.assert_called_once()
+        assert live_price_registry.get_tick("BTCT") is not None, f"WS cleared on {previous}→{current}"
+        mock_invalidate_opps.assert_not_called()
+        mock_clear.assert_not_called()
+        sp_mod._last_known_session = current
 
 
 def test_freshness_constants():

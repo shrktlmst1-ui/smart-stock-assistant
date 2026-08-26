@@ -28,6 +28,9 @@ LiveSource = Literal["live_trade", "live_quote"]
 
 FEED_LOG_INTERVAL_SEC = 30.0
 
+# Jump Engine 24/7 — ingest WS ticks in all active trading sessions.
+_ACTIVE_LIVE_SESSIONS = frozenset({"PRE_MARKET", "REGULAR", "AFTER_HOURS"})
+
 
 @dataclass
 class LivePriceTick:
@@ -131,7 +134,7 @@ class LivePriceRegistry:
         if price <= 0:
             return
         session = get_us_market_session()
-        if session != "REGULAR":
+        if session not in _ACTIVE_LIVE_SESSIONS:
             return
         now = datetime.now(timezone.utc)
         ex_ts = _ns_to_datetime(exchange_ts_ns) if exchange_ts_ns else now
@@ -169,7 +172,7 @@ class LivePriceRegistry:
         if bid <= 0 or ask <= 0:
             return
         session = get_us_market_session()
-        if session != "REGULAR":
+        if session not in _ACTIVE_LIVE_SESSIONS:
             return
         mid = round((bid + ask) / 2, 4)
         now = datetime.now(timezone.utc)
@@ -211,12 +214,22 @@ class LivePriceRegistry:
     ) -> SessionPrice | None:
         """Return fresh live SessionPrice during REGULAR, or None."""
         session = get_us_market_session()
-        if session != "REGULAR":
+        if session not in _ACTIVE_LIVE_SESSIONS:
             return None
 
         sym = symbol.upper()
         trade = self._ticks.get(sym)
         if trade and trade.age_seconds <= REGULAR_LAST_TRADE_MAX_AGE_SECONDS:
+            return _build_result(
+                price=trade.price,
+                volume=volume,
+                prev_close=prev_close,
+                timestamp=trade.exchange_timestamp or trade.received_at,
+                session=session,
+                source="live_trade",
+            )
+        # Carry fresh extended-hours tick into REGULAR open (session transition continuity).
+        if trade and trade.session in ("PRE_MARKET", "AFTER_HOURS") and trade.age_seconds <= 900:
             return _build_result(
                 price=trade.price,
                 volume=volume,

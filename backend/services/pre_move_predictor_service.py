@@ -10,7 +10,10 @@ from typing import Any
 
 import pandas as pd
 
-from analysis.pre_move_breakout import compute_breakout_metrics
+from analysis.early_upward_surge import (
+    fast_filter_surge_rank,
+    relative_surge_detected,
+)
 from analysis.pre_move_compression import compute_compression_metrics
 from analysis.pre_move_early_activity import (
     check_failed_setup,
@@ -54,7 +57,7 @@ from models.pre_move import PreMoveLifecycleEvent, PreMoveScanResult, PreMoveSca
 from models.stock import NewsItem
 from services.extended_hours_gap_detector import _safe_float, is_eligible_extended_gap_symbol
 from services.market_session import ET, get_us_market_session
-from services.pre_move_stage_store import clear_stale_states, get_or_create_state, update_stage_state
+from services.pre_move_stage_store import clear_stale_states, get_or_create_state, list_active_stage_symbols, update_stage_state
 from services.news_service import fetch_stock_news
 from services.scanner_filters import parse_snapshot_item
 from services.session_price import (
@@ -143,9 +146,20 @@ def _fast_filter(snapshot_raw: dict[str, dict], limit: int, session: str) -> lis
             or metrics.premarket_change_pct >= 1.5
             or (metrics.relative_volume >= 1.05 and metrics.change_percent >= 1.0)
             or (metrics.premarket_change_pct >= 1.0 and metrics.relative_volume >= 1.1)
+            or (
+                metrics.change_percent >= 0.35
+                and metrics.change_percent < 25.0
+                and metrics.relative_volume >= 1.08
+            )
         )
         if not activity:
             continue
+        surge_hint = relative_surge_detected(
+            change_percent=metrics.change_percent or metrics.premarket_change_pct,
+            volume_acceleration_1m=max(metrics.relative_volume * 0.5, 1.0),
+            rvol=metrics.relative_volume,
+            rvol_same_time=metrics.relative_volume,
+        )
         rows.append({
             "symbol": metrics.symbol,
             "name": metrics.name,
@@ -159,8 +173,16 @@ def _fast_filter(snapshot_raw: dict[str, dict], limit: int, session: str) -> lis
             "premarket_change": metrics.premarket_change_pct,
             "item": item,
             "fast_score": metrics.composite_score,
+            "surge_hint": surge_hint,
         })
-    rows.sort(key=lambda r: (r["change_percent"], r["rvol"], r["fast_score"]), reverse=True)
+    rows.sort(
+        key=lambda r: (
+            fast_filter_surge_rank(r["change_percent"], r["rvol"]) + (8.0 if r.get("surge_hint") else 0.0),
+            r["rvol"],
+            r["fast_score"],
+        ),
+        reverse=True,
+    )
     return rows[:PREMOVE_CANDIDATE_LIMIT]
 
 
@@ -258,7 +280,37 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
         logger.debug("[PREMOVE] %s analyze failed: %s", sym, type(exc).__name__)
         return None
 
-    if bars.empty or len(bars) < PREMOVE_MIN_ANALYSIS_BARS:
+    if bars.empty:
+        return PreMoveSignal(
+            signal_id=f"{sym}:{now_iso[:10]}",
+            symbol=sym,
+            name=candidate.get("name", sym),
+            current_price=price,
+            change_percent=change_pct,
+            status="INSUFFICIENT_DATA",
+            rejection_reason="INSUFFICIENT_DATA",
+            data_timestamp=now_iso,
+        )
+
+    fast_upward_path = False
+    if len(bars) < PREMOVE_MIN_ANALYSIS_BARS and len(bars) >= 2 and change_pct > 0:
+        early_vol = compute_volume_metrics(bars)
+        fast_upward_path = relative_surge_detected(
+            change_percent=change_pct,
+            volume_acceleration_1m=early_vol.volume_acceleration_1m,
+            volume_acceleration_slope=early_vol.volume_acceleration_slope,
+            rvol=early_vol.rvol,
+        )
+        if fast_upward_path:
+            logger.info(
+                "[JUMP] %s FAST_UPWARD_JUMP_PATH bars=%d (min=%d)",
+                sym,
+                len(bars),
+                PREMOVE_MIN_ANALYSIS_BARS,
+            )
+
+    min_bars = 2 if fast_upward_path else PREMOVE_MIN_ANALYSIS_BARS
+    if len(bars) < min_bars:
         return PreMoveSignal(
             signal_id=f"{sym}:{now_iso[:10]}",
             symbol=sym,
@@ -573,7 +625,35 @@ async def scan_pre_move_async(
         pass
 
     deep_n = deep_limit or PREMOVE_DEEP_LIMIT
-    to_analyze = candidates[:deep_n]
+    pinned_syms = list_active_stage_symbols()
+    seen = {c["symbol"] for c in candidates}
+    pinned: list[dict[str, Any]] = []
+    for sym in pinned_syms:
+        if sym in seen or sym not in raw:
+            continue
+        item = raw[sym]
+        if not is_eligible_extended_gap_symbol(sym, item):
+            continue
+        metrics = parse_snapshot_item(item, session=market_session)
+        if not metrics or metrics.change_percent <= 0:
+            continue
+        pinned.append({
+            "symbol": metrics.symbol,
+            "name": metrics.name,
+            "price": metrics.price,
+            "change_percent": metrics.change_percent,
+            "volume": metrics.volume,
+            "rvol": metrics.relative_volume,
+            "spread_pct": metrics.spread_pct,
+            "day_high": metrics.day_high,
+            "prev_day_high": metrics.day_high,
+            "premarket_change": metrics.premarket_change_pct,
+            "item": item,
+            "fast_score": metrics.composite_score + 50,
+            "surge_hint": True,
+        })
+        seen.add(sym)
+    to_analyze = pinned + candidates[:deep_n]
 
     if market_session == "REGULAR":
         from services.live_price_registry import live_price_registry
@@ -582,7 +662,10 @@ async def scan_pre_move_async(
             if live_price_registry.status.connected:
                 break
             await asyncio.sleep(0.25)
-        await asyncio.sleep(0.8)
+        if live_price_registry.status.connected:
+            await asyncio.sleep(0.15)
+        else:
+            await asyncio.sleep(0.8)
 
     signals: list[PreMoveSignal] = []
     rejected: list[PreMoveSignal] = []

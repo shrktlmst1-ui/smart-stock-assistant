@@ -48,6 +48,10 @@ class OpportunityNowSignal {
   final String detectedAt;
   final bool hasConfirmedNews;
   final String volumeStatus;
+  final String jumpAlertId;
+  final bool jumpQualified;
+  final bool jumpAlertCreated;
+  final String stageLifecycle;
 
   const OpportunityNowSignal({
     required this.symbol,
@@ -93,6 +97,10 @@ class OpportunityNowSignal {
     this.detectedAt = '',
     this.hasConfirmedNews = false,
     this.volumeStatus = 'KNOWN',
+    this.jumpAlertId = '',
+    this.jumpQualified = false,
+    this.jumpAlertCreated = false,
+    this.stageLifecycle = '',
   });
 
   factory OpportunityNowSignal.fromJson(Map<String, dynamic> json) {
@@ -142,6 +150,10 @@ class OpportunityNowSignal {
       detectedAt: readJsonString(json, ['detected_at', 'detectedAt']),
       hasConfirmedNews: readJsonBool(json, ['has_confirmed_news', 'hasConfirmedNews']),
       volumeStatus: readJsonString(json, ['volume_status', 'volumeStatus'], defaultValue: 'KNOWN'),
+      jumpAlertId: readJsonString(json, ['jump_alert_id', 'jumpAlertId']),
+      jumpQualified: readJsonBool(json, ['jump_qualified', 'jumpQualified']),
+      jumpAlertCreated: readJsonBool(json, ['jump_alert_created', 'jumpAlertCreated']),
+      stageLifecycle: readJsonString(json, ['stage_lifecycle', 'stageLifecycle']),
     );
   }
 
@@ -186,6 +198,13 @@ class OpportunityNowSignal {
       !isExtendedGap &&
       (isWatch || isReady || isOpportunityNow);
 
+  bool get isQualifiedJumpAlert =>
+      jumpAlertId.isNotEmpty &&
+      jumpQualified &&
+      jumpAlertCreated &&
+      price > 0 &&
+      changePercent > 0;
+
   String get sessionLabelAr {
     switch (session) {
       case 'PRE_MARKET':
@@ -211,6 +230,8 @@ class OpportunityNowResponse {
   final List<OpportunityNowSignal> signals;
   final OpportunityNowSignal? topSignal;
   final OpportunityNowSignal? extendedAlert;
+  final List<OpportunityNowSignal> jumpAlerts;
+  final String jumpEngineStatus;
 
   const OpportunityNowResponse({
     required this.status,
@@ -225,6 +246,8 @@ class OpportunityNowResponse {
     required this.signals,
     required this.topSignal,
     this.extendedAlert,
+    this.jumpAlerts = const [],
+    this.jumpEngineStatus = 'ARMED',
   });
 
   factory OpportunityNowResponse.fromJson(Map<String, dynamic> json) {
@@ -245,8 +268,16 @@ class OpportunityNowResponse {
     final rawSignals = json['signals'] as List? ?? [];
     final signals = rawSignals
         .map((e) => OpportunityNowSignal.fromJson(e as Map<String, dynamic>))
-        .where((s) => s.isValid)
+        .where((s) => s.isValid || s.isQualifiedJumpAlert)
         .toList();
+
+    final rawJumpAlerts = json['jump_alerts'] ?? json['jumpAlerts'];
+    final jumpAlerts = rawJumpAlerts is List
+        ? rawJumpAlerts
+            .map((e) => OpportunityNowSignal.fromJson(e as Map<String, dynamic>))
+            .where((s) => s.isQualifiedJumpAlert)
+            .toList()
+        : <OpportunityNowSignal>[];
 
     final status = readJsonString(json, ['status'], defaultValue: 'NONE');
     final statusAr = readJsonString(json, ['status_ar', 'statusAr']);
@@ -268,6 +299,12 @@ class OpportunityNowResponse {
       signals: signals,
       topSignal: top,
       extendedAlert: extended,
+      jumpAlerts: jumpAlerts,
+      jumpEngineStatus: readJsonString(
+        json,
+        ['jump_engine_status', 'jumpEngineStatus'],
+        defaultValue: 'ARMED',
+      ),
     );
   }
 
@@ -283,10 +320,18 @@ class OpportunityNowResponse {
     return null;
   }
 
-  /// Old correct Jump section: news + watch only, max [limit] items.
+  /// Old correct Jump section: news + watch + PreMove qualified jumps, max [limit] items.
   List<OpportunityNowSignal> confirmedJumps({int limit = 3}) {
     final out = <OpportunityNowSignal>[];
     final seen = <String>{};
+
+    for (final ja in jumpAlerts) {
+      if (!ja.isQualifiedJumpAlert) continue;
+      final key = ja.symbol.toUpperCase();
+      if (seen.contains(key)) continue;
+      out.add(ja);
+      seen.add(key);
+    }
 
     final news = extendedAlert;
     if (news != null && news.isRealNewsJump) {

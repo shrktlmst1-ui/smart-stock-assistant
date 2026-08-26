@@ -48,6 +48,19 @@ REGULAR_PRICE_MAX_AGE_SECONDS = REGULAR_LAST_TRADE_MAX_AGE_SECONDS
 
 _last_known_session: MarketSession | None = None
 
+# Jump Engine stays armed across all intraday session boundaries (24/7 path).
+_JUMP_CONTINUITY_SESSIONS = frozenset({"PRE_MARKET", "REGULAR", "AFTER_HOURS", "CLOSED"})
+
+
+def _should_preserve_jump_continuity(
+    previous: MarketSession | None,
+    current: MarketSession | None,
+) -> bool:
+    """Keep WS prices, stage store, candidates, and alert registry on session change."""
+    if previous is None or current is None or previous == current:
+        return False
+    return previous in _JUMP_CONTINUITY_SESSIONS and current in _JUMP_CONTINUITY_SESSIONS
+
 
 def _safe_float(v: object, default: float = 0.0) -> float:
     try:
@@ -598,11 +611,13 @@ def invalidate_price_caches(
     current: MarketSession | None = None,
 ) -> None:
     """Drop cached symbol/bar data when market session changes."""
-    preserve_jump_continuity = previous == "PRE_MARKET" and current == "REGULAR"
+    preserve_jump_continuity = _should_preserve_jump_continuity(previous, current)
     if preserve_jump_continuity:
         logger.info(
-            "[JUMP] PRE_MARKET→REGULAR: preserving jump WS prices and opportunities cache "
-            "(stage progression + alert registry unchanged)"
+            "[JUMP] %s→%s: preserving jump WS prices and opportunities cache "
+            "(stage progression + alert registry unchanged)",
+            previous,
+            current,
         )
 
     try:

@@ -111,6 +111,27 @@ def clear_stale_states() -> int:
     return removed
 
 
+def list_active_stage_symbols(*, min_stage: str = "EARLY_WATCH") -> list[str]:
+    """Symbols with in-progress upward stage — keep in deep scan pool."""
+    order = {
+        "DISCOVERED": 0,
+        "EARLY_WATCH": 1,
+        "PRE_BREAKOUT": 2,
+        "EARLY_ENTRY": 3,
+        "BREAKOUT_CONFIRMED": 4,
+    }
+    min_rank = order.get(min_stage, 1)
+    now = time.time()
+    out: list[str] = []
+    with _lock:
+        for k, state in _store.items():
+            if now - state.last_updated > STAGE_STATE_TTL_SECONDS:
+                continue
+            if order.get(state.current_stage, -1) >= min_rank:
+                out.append(state.symbol.upper())
+    return out
+
+
 def reset_store() -> None:
     """Test helper."""
     with _lock:

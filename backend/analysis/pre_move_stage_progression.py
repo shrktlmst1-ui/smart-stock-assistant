@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from analysis.early_upward_surge import relative_surge_from_snapshot, surge_direct_early_entry
 from config import (
     PREMOVE_MIN_RRR,
     STAGE_BREAKOUT_NEAR_PCT,
@@ -405,6 +406,33 @@ def _early_watch_signals(snap: StageSnapshot) -> int:
     return count
 
 
+def _surge_burst_pre_breakout(
+    snap: StageSnapshot,
+    progression_score: float,
+    ew_signals: int,
+    trend: float,
+) -> bool:
+    """Relative surge path — PB without waiting for 2m persistence."""
+    if not relative_surge_from_snapshot(snap):
+        return False
+    if ew_signals < 2:
+        return False
+    if progression_score < STAGE_EW_MIN_PROGRESSION + 6:
+        return False
+    vwap_ok = snap.vwap_hold or snap.vwap_reclaim or snap.distance_from_vwap_pct <= 3.5
+    vol_ok = (
+        snap.volume_acceleration_1m >= STAGE_VOL_ACCEL_MIN
+        or snap.volume_acceleration_slope >= 1.06
+        or _effective_rvol(snap) >= STAGE_RVOL_MIN
+    )
+    near = (
+        snap.breakout_pressure >= 35
+        or snap.distance_to_breakout_pct <= STAGE_RESISTANCE_NEAR_PCT
+        or snap.resistance_distance_pct <= STAGE_RESISTANCE_NEAR_PCT
+    )
+    return vwap_ok and vol_ok and near and snap.liquidity_score >= 30 and trend >= -4
+
+
 def _burst_pre_breakout(
     snap: StageSnapshot,
     progression_score: float,
@@ -630,15 +658,20 @@ def evaluate_early_entry_gate(
         blocks.append("failed_setup")
         return _fail()
 
-    if _breakout_confirmed(snap):
-        blocks.append("already_breakout")
-        return _fail()
-
     base = state.base_price or snap.price
     move_from_base = (snap.price - base) / base * 100.0 if base > 0 else 0.0
     if move_from_base >= STAGE_EE_MAX_EXTENSION_PCT:
         blocks.append(f"extension_{move_from_base:.1f}pct")
         return _fail()
+
+    if _breakout_confirmed(snap):
+        touch_entry_ok = (
+            relative_surge_from_snapshot(snap)
+            and move_from_base < STAGE_EE_MAX_EXTENSION_PCT
+        )
+        if not touch_entry_ok:
+            blocks.append("already_breakout")
+            return _fail()
 
     if regress:
         blocks.append(f"regression:{','.join(regress[:2])}")
@@ -650,15 +683,26 @@ def evaluate_early_entry_gate(
     dist = _distance_to_trigger(snap)
     approaching = _resistance_approaching(history, snap)
     pb_windows = state.pb_consecutive_windows
+    ew_count = _early_watch_signals(snap)
+    surge_ee = surge_direct_early_entry(
+        snap,
+        progression_score=effective_score,
+        ew_signals=ew_count,
+        move_from_base_pct=move_from_base,
+    )
 
     # --- Hard safety blocks (non-negotiable) ---
-    if pb_windows < STAGE_EE_PB_PERSISTENCE_MIN:
-        blocks.append(f"pb_persistence_{pb_windows}<{STAGE_EE_PB_PERSISTENCE_MIN}")
+    if not surge_ee:
+        if pb_windows < STAGE_EE_PB_PERSISTENCE_MIN:
+            blocks.append(f"pb_persistence_{pb_windows}<{STAGE_EE_PB_PERSISTENCE_MIN}")
 
-    if persist_min < STAGE_EE_MOMENTUM_PERSISTENCE_MIN:
-        blocks.append(f"momentum_persist_{persist_min}<{STAGE_EE_MOMENTUM_PERSISTENCE_MIN}")
+        if persist_min < STAGE_EE_MOMENTUM_PERSISTENCE_MIN:
+            blocks.append(f"momentum_persist_{persist_min}<{STAGE_EE_MOMENTUM_PERSISTENCE_MIN}")
+    elif pb_windows < 1 or persist_min < 1:
+        blocks.append(f"surge_persist_{pb_windows}m/{persist_min}m")
 
-    if dist > STAGE_EE_MAX_RESISTANCE_DIST_PCT:
+    surge_resist_ok = relative_surge_from_snapshot(snap) and dist <= STAGE_RESISTANCE_NEAR_PCT
+    if dist > STAGE_EE_MAX_RESISTANCE_DIST_PCT and not surge_resist_ok:
         blocks.append(f"resistance_dist_{dist:.1f}%>{STAGE_EE_MAX_RESISTANCE_DIST_PCT}%")
 
     if snap.risk_reward < STAGE_EE_MIN_RRR:
@@ -895,7 +939,48 @@ def evaluate_stage_transition(
             metrics.stage_lifecycle = "FAILED_SETUP"
             return "FAILED_SETUP", metrics
 
-    # Breakout confirmed — must come before EE escalation if already broken out
+    # PRE_BREAKOUT → EARLY_ENTRY before labeling breakout confirmed (early extension only)
+    if state.current_stage == "PRE_BREAKOUT" and move_from_base < STAGE_EE_MAX_EXTENSION_PCT:
+        ee_ok, readiness, ee_conf, ee_blocks, ee_quality, timing_passed = _early_entry_ready(
+            state, snap, history,
+            effective_score=effective_score,
+            persist_min=persist_min,
+            trend=trend,
+            regress=regress,
+            bars=bars,
+            stop_loss=stop_loss,
+            tp1=tp1,
+            has_fresh_news=has_fresh_news,
+            news_catalyst_score=news_catalyst_score,
+            quality_gate_enabled=quality_gate_enabled,
+            quality_thresholds=quality_thresholds,
+            confluence_weights=confluence_weights,
+        )
+        metrics.trigger_readiness_score = readiness
+        metrics.ee_confidence = ee_conf
+        metrics.ee_block_reasons = ee_blocks
+        metrics.ee_timing_gate_passed = timing_passed
+        if ee_quality is not None:
+            metrics.ee_confluence_quality = ee_quality.confluence_quality_score
+            metrics.ee_quality_score = ee_quality.confluence_quality_score
+            metrics.ee_rejection_score = ee_quality.rejection_score
+            metrics.ee_volume_efficiency = ee_quality.volume_efficiency_score
+            metrics.ee_breakout_failure_risk = ee_quality.breakout_failure_risk
+            metrics.ee_entry_location = ee_quality.entry_location_score
+            metrics.ee_spread_stability = ee_quality.spread_stability
+            metrics.ee_liquidity_consistency = ee_quality.liquidity_consistency
+            metrics.ee_stop_distance_pct = ee_quality.stop_distance_pct
+            metrics.ee_price_holding = ee_quality.price_holding_score
+            metrics.ee_catalyst_confirmed = ee_quality.catalyst_confirmed
+            metrics.ee_quality_factors = ee_quality.quality_factors
+            metrics.ee_quality_blocks = ee_quality.block_reasons
+        if ee_ok:
+            metrics.stage_lifecycle = "EARLY_ENTRY"
+            metrics.escalation_ready = True
+            metrics.ee_gate_passed = True
+            return "EARLY_ENTRY", metrics
+
+    # Breakout confirmed — after EE attempt while still in early extension band
     if _breakout_confirmed(snap) and state.current_stage in ("PRE_BREAKOUT", "EARLY_ENTRY", "EARLY_WATCH"):
         metrics.stage_lifecycle = "BREAKOUT_CONFIRMED"
         metrics.escalation_ready = True
@@ -920,7 +1005,9 @@ def evaluate_stage_transition(
     target = current
 
     if current in ("DISCOVERED",):
-        if ew_signals >= 2 and effective_score >= STAGE_EW_MIN_PROGRESSION:
+        if (ew_signals >= 2 and effective_score >= STAGE_EW_MIN_PROGRESSION) or (
+            relative_surge_from_snapshot(snap) and ew_signals >= 1 and effective_score >= STAGE_EW_MIN_PROGRESSION - 4
+        ):
             target = "EARLY_WATCH"
             metrics.escalation_ready = True
 
@@ -929,6 +1016,9 @@ def evaluate_stage_transition(
             target = "PRE_BREAKOUT"
             metrics.escalation_ready = True
         elif _burst_pre_breakout(snap, effective_score, ew_signals, trend):
+            target = "PRE_BREAKOUT"
+            metrics.escalation_ready = True
+        elif _surge_burst_pre_breakout(snap, effective_score, ew_signals, trend):
             target = "PRE_BREAKOUT"
             metrics.escalation_ready = True
         elif effective_score >= STAGE_EW_MIN_PROGRESSION + 15 and persist_min >= STAGE_PERSISTENCE_2M and trend >= 3:

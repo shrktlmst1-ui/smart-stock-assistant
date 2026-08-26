@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 from models.premarket_opportunity import PremarketScanResult
 
+from models.jump_alert import JumpAlert
+
 OpportunityStatusCode = Literal["NONE", "WATCH", "READY", "NOW", "CANCELLED"]
 OpportunityNowStatusAr = Literal["فرصة الآن", "استعد", "مراقبة", "تجنب", "أُلغيت"]
 RiskLevelAr = Literal["منخفض", "متوسط", "مرتفع"]
@@ -58,6 +60,11 @@ class OpportunityNowSignal(BaseModel):
     detected_at: str = ""
     has_confirmed_news: bool = False
     volume_status: str = "KNOWN"
+    # PreMove / Jump Alert registry fields (REGULAR + all sessions)
+    jump_alert_id: str = ""
+    jump_qualified: bool = False
+    jump_alert_created: bool = False
+    stage_lifecycle: str = ""
 
 
 class OpportunityNowResponse(BaseModel):
@@ -74,3 +81,5 @@ class OpportunityNowResponse(BaseModel):
     top_signal: OpportunityNowSignal | None = None
     extended_alert: OpportunityNowSignal | None = None
     premarket_scan: PremarketScanResult | None = None
+    jump_alerts: list[OpportunityNowSignal] = Field(default_factory=list)
+    jump_engine_status: str = "ARMED"

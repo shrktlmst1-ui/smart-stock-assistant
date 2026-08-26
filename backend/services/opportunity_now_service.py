@@ -13,6 +13,8 @@ from services.extended_hours_gap_detector import (
     extended_gap_registry,
     sync_extended_gap_detector,
 )
+from services.jump_alert_registry import jump_alert_registry
+from services.jump_engine_monitor import jump_engine_monitor
 from services.live_confirmation_engine import (
     LIVE_MONITOR_POOL,
     STATUS_AR,
@@ -33,6 +35,58 @@ MAX_PRICE_USD = 10.0
 MIN_PRICE_USD = 0.50
 
 _STAGE_RANK = {"EXPLOSIVE": 3, "ACTIVE": 2, "WATCH": 1}
+
+
+def _jump_alert_to_signal(alert, *, session: str) -> OpportunityNowSignal:
+    """Map jump_alert_registry entry to opportunity-now signal (same UI path as extended)."""
+    status = "NOW"
+    stage = alert.stage or alert.ai_signal or "EARLY_ENTRY"
+    return OpportunityNowSignal(
+        symbol=alert.symbol,
+        name=alert.name or alert.symbol,
+        price=round(alert.price, 4),
+        change_percent=round(alert.change_percent, 2),
+        score=float(alert.score),
+        status=status,
+        status_ar=STATUS_AR.get(status, status),
+        opportunity_type=alert.ai_signal or stage,
+        appeared_at=alert.created_at,
+        expires_at=alert.expires_at,
+        entry_zone=round((alert.entry_low + alert.entry_high) / 2, 4),
+        entry_zone_low=alert.entry_low,
+        entry_zone_high=alert.entry_high,
+        stop_loss=alert.stop_loss,
+        target_1=alert.tp1,
+        target_2=alert.tp2,
+        risk_level="متوسط" if alert.score >= 70 else "مرتفع",
+        risk_reward_ratio=alert.risk_reward,
+        confirmed_factors=0,
+        total_factors=17,
+        consecutive_confirmations=0,
+        reasons_ar=[alert.status_reason_ar] if alert.status_reason_ar else [f"PreMove {alert.score}/100"],
+        cancellation_reasons_ar=[],
+        late_entry_warning=alert.is_too_late,
+        has_news_catalyst=False,
+        data_timestamp=alert.created_at,
+        data_age_seconds=0.0,
+        session=session,
+        detection_stage=stage,
+        jump_alert_id=alert.alert_id,
+        jump_qualified=alert.jump_qualified,
+        jump_alert_created=alert.jump_alert_created,
+        stage_lifecycle=stage,
+    )
+
+
+def _collect_jump_alerts(session: str) -> list[OpportunityNowSignal]:
+    """Qualified REGULAR/PreMove jumps — unified DISPLAYED path."""
+    out: list[OpportunityNowSignal] = []
+    for alert in jump_alert_registry.get_qualified_alerts():
+        sig = _jump_alert_to_signal(alert, session=session)
+        if sig.price > 0 and sig.change_percent > 0 and sig.jump_qualified:
+            out.append(sig)
+    out.sort(key=lambda s: s.score, reverse=True)
+    return out
 
 
 def _collect_snapshots() -> list[StockSnapshot]:
@@ -306,6 +360,10 @@ def get_opportunity_now() -> OpportunityNowResponse:
 
         sync_engine_from_scanner()
 
+        jump_alerts = _collect_jump_alerts(session)
+        engine_snap = jump_engine_monitor.get_snapshot()
+        jump_engine_status = engine_snap.jump_engine_status
+
         premarket_scan: PremarketScanResult | None = None
         if session == "PRE_MARKET":
             from services.premarket_opportunity_scanner import get_last_premarket_scan
@@ -329,6 +387,10 @@ def get_opportunity_now() -> OpportunityNowResponse:
                 if sig.price > 0:
                     signals.append(sig)
 
+        for ja in jump_alerts:
+            if ja.symbol.upper() not in {s.symbol.upper() for s in signals}:
+                signals.append(ja)
+
         signals.sort(
             key=lambda s: (s.detection_stage == "EXPLOSIVE", s.extended_gap_pct, s.status == "NOW", s.score),
             reverse=True,
@@ -349,6 +411,8 @@ def get_opportunity_now() -> OpportunityNowResponse:
                 none_message = "لا توجد فرصة دخول فعلية الآن"
         else:
             top = _pick_top_signal(signals, best, market_open=market_open)
+            if not top and jump_alerts:
+                top = jump_alerts[0]
             if top:
                 resp_status = top.status if top.status != "NONE" else "NONE"
             else:
@@ -376,6 +440,8 @@ def get_opportunity_now() -> OpportunityNowResponse:
             top_signal=top if top and top.price > 0 else None,
             extended_alert=extended_alert,
             premarket_scan=premarket_scan,
+            jump_alerts=jump_alerts,
+            jump_engine_status=jump_engine_status,
         )
     except Exception as exc:
         logger.warning("Opportunity now unavailable: %s", type(exc).__name__)

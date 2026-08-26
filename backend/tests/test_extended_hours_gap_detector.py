@@ -275,7 +275,31 @@ def test_market_coverage_pct_capped():
     assert counts.market_coverage_pct <= 100.0
 
 
-def test_sync_skips_regular_session():
+def test_sync_preserves_registry_regular_session():
+    """REGULAR must not reset extended gap registry — engine stays armed."""
+    from services.extended_hours_gap_detector import ExtendedGapDetection, extended_gap_registry
+
+    det = ExtendedGapDetection(
+        symbol="DNUT",
+        name="DNUT",
+        session="AFTER_HOURS",
+        previous_close=1.0,
+        extended_price=1.25,
+        extended_gap_pct=25.0,
+        extended_volume=100_000,
+        relative_volume=2.0,
+        detection_stage="EXPLOSIVE",
+        catalyst_type="NEWS",
+        catalyst_title_ar="خبر",
+        catalyst_source="news",
+        catalyst_published_at="",
+        has_confirmed_news=True,
+    )
+    extended_gap_registry.register(det)
+
     with patch("services.extended_hours_gap_detector.get_us_market_session", return_value="REGULAR"):
         result = sync_extended_gap_detector()
-    assert result == []
+
+    assert len(result) == 1
+    assert result[0].symbol == "DNUT"
+    assert extended_gap_registry.get("DNUT") is not None

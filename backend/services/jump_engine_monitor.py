@@ -13,11 +13,35 @@ from services.market_session import get_us_market_session, is_regular_session
 logger = logging.getLogger(__name__)
 
 LOG_INTERVAL_SEC = 30.0
+NO_LIVE_DATA_WS_AGE_SECONDS = 120.0
+
+
+def _resolve_jump_engine_status(
+    *,
+    websocket_connected: bool,
+    last_ws_message_time: str,
+    session: str,
+) -> str:
+    """ARMED when engine ticks; NO_LIVE_DATA when no fresh live feed in an active session."""
+    if session == "CLOSED":
+        return "ARMED"
+    if websocket_connected:
+        return "ARMED"
+    if last_ws_message_time:
+        try:
+            last_dt = datetime.fromisoformat(last_ws_message_time.replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - last_dt).total_seconds()
+            if age <= NO_LIVE_DATA_WS_AGE_SECONDS:
+                return "ARMED"
+        except ValueError:
+            pass
+    return "NO_LIVE_DATA"
 
 
 @dataclass
 class JumpEngineSnapshot:
     status: str = "STOPPED"
+    jump_engine_status: str = "ARMED"
     market_open: bool = False
     current_session: str = "CLOSED"
     scanner_task_alive: bool = False
@@ -70,10 +94,15 @@ class JumpEngineMonitor:
     ) -> None:
         with self._lock:
             self._snap.cycle_number += 1
-            self._snap.status = "RUNNING"
             session = get_us_market_session()
+            self._snap.status = "RUNNING"
             self._snap.current_session = session
             self._snap.market_open = is_regular_session(session)
+            self._snap.jump_engine_status = _resolve_jump_engine_status(
+                websocket_connected=websocket_connected,
+                last_ws_message_time=last_ws_message_time,
+                session=session,
+            )
             self._snap.scanner_task_alive = scanner_task_alive
             self._snap.websocket_connected = websocket_connected
             self._snap.last_ws_message_time = last_ws_message_time
@@ -133,12 +162,13 @@ class JumpEngineMonitor:
             self._snap.last_status_log_mono = now
             s = self._snap
         logger.info(
-            "JUMP_ENGINE_STATUS status=%s market_open=%s current_session=%s "
+            "JUMP_ENGINE_STATUS status=%s jump_engine_status=%s market_open=%s current_session=%s "
             "scanner_task_alive=%s websocket_connected=%s last_ws_message_time=%s "
             "last_scan_time=%s cycle_number=%d scanned_count=%d candidate_count=%d "
             "stage3_count=%d alerts_generated=%d last_error=%s reconnect_count=%d "
             "refresh_in_progress=%s refresh_skipped=%d",
             s.status,
+            s.jump_engine_status,
             s.market_open,
             s.current_session,
             s.scanner_task_alive,
