@@ -77,6 +77,12 @@ class JumpAlertRegistry:
         }
 
     def create_from_signal(self, sig: PreMoveSignal) -> JumpAlert | None:
+        from analysis.upward_jump_gate import evaluate_upward_jump
+
+        up_ok, up_reject = evaluate_upward_jump(sig)
+        if not up_ok:
+            logger.info("JUMP_ALERT_BLOCKED symbol=%s reason=%s", sig.symbol.upper(), up_reject)
+            return None
         if not sig.validated or sig.status not in QUALIFIED_JUMP_SIGNALS:
             return None
         if sig.late_move.is_too_late or sig.status == "TOO_LATE_TO_CHASE":

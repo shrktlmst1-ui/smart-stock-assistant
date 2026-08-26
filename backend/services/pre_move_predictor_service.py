@@ -131,14 +131,17 @@ def _fast_filter(snapshot_raw: dict[str, dict], limit: int, session: str) -> lis
             continue
         if metrics.price < SCANNER_MIN_PRICE or metrics.price > SCANNER_MAX_PRICE:
             continue
+        up_move = metrics.change_percent > 0 or metrics.premarket_change_pct > 0
+        if not up_move:
+            continue
         activity = (
             metrics.change_percent >= 3.0
             or metrics.premarket_change_pct >= 5.0
             or metrics.relative_volume >= 1.2
             or metrics.volume_spike
-            or abs(metrics.change_percent) >= 2.0
+            or metrics.change_percent >= 2.0
             or metrics.premarket_change_pct >= 1.5
-            or (metrics.relative_volume >= 1.05 and abs(metrics.change_percent) >= 1.0)
+            or (metrics.relative_volume >= 1.05 and metrics.change_percent >= 1.0)
             or (metrics.premarket_change_pct >= 1.0 and metrics.relative_volume >= 1.1)
         )
         if not activity:
@@ -508,10 +511,26 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
         jump_engine_monitor.log_jump_rejected(sym, "LOW_LIQUIDITY")
 
     if sig.validated and sig.status in ("EARLY_ENTRY", "HIGH_CONVICTION_EARLY"):
-        jump_engine_monitor.log_jump_qualified(sym)
-        from services.jump_alert_registry import jump_alert_registry
+        from analysis.upward_jump_gate import evaluate_upward_jump, upward_stage_label
 
-        jump_alert_registry.create_from_signal(sig)
+        up_ok, up_reject = evaluate_upward_jump(sig)
+        if not up_ok:
+            sig.validated = False
+            sig.rejection_reason = up_reject
+            jump_engine_monitor.log_jump_rejected(sym, up_reject)
+        else:
+            stage_up = upward_stage_label(new_lifecycle or sig.status)
+            logger.info(
+                "[JUMP] %s path=%s score=%d change=%.2f",
+                sym,
+                stage_up,
+                sig.pre_move_score,
+                sig.change_percent,
+            )
+            jump_engine_monitor.log_jump_qualified(sym)
+            from services.jump_alert_registry import jump_alert_registry
+
+            jump_alert_registry.create_from_signal(sig)
 
     return sig
 

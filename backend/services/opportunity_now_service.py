@@ -200,12 +200,12 @@ def _pick_top_signal(
         if not market_open and top.status == "NOW":
             top.status = "WATCH"
             top.status_ar = STATUS_AR["WATCH"]
-        if top.price > 0 and top.score > 0:
+        if top.price > 0 and top.score > 0 and top.change_percent > 0:
             return top
 
     regular = [
         s for s in signals
-        if s.score > 0 and s.extended_gap_pct <= 0 and not s.detection_stage
+        if s.score > 0 and s.change_percent > 0 and s.extended_gap_pct <= 0 and not s.detection_stage
     ]
     for preferred in ("NOW", "READY", "WATCH"):
         tier = [s for s in regular if s.status == preferred]
@@ -223,7 +223,7 @@ def _pick_extended_alert() -> OpportunityNowSignal | None:
         key=lambda d: (_STAGE_RANK.get(d.detection_stage, 0), d.extended_gap_pct),
     )
     sig = _detection_to_signal(best)
-    if sig.price > 0 and (sig.extended_gap_pct > 0 or sig.detection_stage):
+    if sig.price > 0 and sig.extended_gap_pct > 0 and sig.detection_stage:
         return sig
     return None
 

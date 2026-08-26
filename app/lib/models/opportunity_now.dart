@@ -175,12 +175,14 @@ class OpportunityNowSignal {
 
   bool get isCancelled => status == 'CANCELLED';
 
-  bool get isRealNewsJump => isValidExtendedAlert && detectionStage.isNotEmpty;
+  bool get isRealNewsJump =>
+      isValidExtendedAlert && detectionStage.isNotEmpty && extendedGapPct > 0;
 
   bool get isExtendedGap => extendedGapPct > 0 || detectionStage.isNotEmpty;
 
   bool get isRealWatchJump =>
       isValid &&
+      changePercent > 0 &&
       !isExtendedGap &&
       (isWatch || isReady || isOpportunityNow);
 
