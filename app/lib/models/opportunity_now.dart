@@ -175,7 +175,14 @@ class OpportunityNowSignal {
 
   bool get isCancelled => status == 'CANCELLED';
 
+  bool get isRealNewsJump => isValidExtendedAlert && detectionStage.isNotEmpty;
+
   bool get isExtendedGap => extendedGapPct > 0 || detectionStage.isNotEmpty;
+
+  bool get isRealWatchJump =>
+      isValid &&
+      !isExtendedGap &&
+      (isWatch || isReady || isOpportunityNow);
 
   String get sessionLabelAr {
     switch (session) {
@@ -273,4 +280,40 @@ class OpportunityNowResponse {
     }
     return null;
   }
+
+  /// Old correct Jump section: news + watch only, max [limit] items.
+  List<OpportunityNowSignal> confirmedJumps({int limit = 3}) {
+    final out = <OpportunityNowSignal>[];
+    final seen = <String>{};
+
+    final news = extendedAlert;
+    if (news != null && news.isRealNewsJump) {
+      out.add(news);
+      seen.add(news.symbol.toUpperCase());
+    }
+
+    final watchPool = <OpportunityNowSignal>[];
+    void consider(OpportunityNowSignal? signal) {
+      if (signal == null || !signal.isRealWatchJump) return;
+      final key = signal.symbol.toUpperCase();
+      if (seen.contains(key)) return;
+      if (watchPool.any((s) => s.symbol.toUpperCase() == key)) return;
+      watchPool.add(signal);
+    }
+
+    consider(displayTop);
+    for (final s in signals) {
+      consider(s);
+    }
+    watchPool.sort((a, b) => b.score.compareTo(a.score));
+
+    for (final w in watchPool) {
+      if (out.length >= limit) break;
+      out.add(w);
+      seen.add(w.symbol.toUpperCase());
+    }
+    return out;
+  }
+
+  bool get hasConfirmedJumps => confirmedJumps().isNotEmpty;
 }

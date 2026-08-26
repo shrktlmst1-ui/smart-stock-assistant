@@ -184,6 +184,107 @@ void main() {
       expect(resp.hasExtendedAlert, isTrue);
     });
 
+    test('confirmedJumps returns news + watch max 3', () {
+      final resp = OpportunityNowResponse.fromJson({
+        'status': 'WATCH',
+        'market_status': 'PRE_MARKET',
+        'market_open': false,
+        'scan_interval_seconds': 15,
+        'message': '',
+        'ws_connected': true,
+        'top_signal': {
+          'symbol': 'BTCT',
+          'name': 'BTCT',
+          'price': 3.5,
+          'change_percent': 2,
+          'score': 72,
+          'status': 'WATCH',
+          'status_ar': 'مراقبة',
+          'appeared_at': '2026-01-01T00:00:00Z',
+          'expires_at': '2026-01-01T00:15:00Z',
+          'entry_zone': 3.5,
+          'entry_zone_low': 3.4,
+          'entry_zone_high': 3.6,
+          'stop_loss': 3.4,
+          'target_1': 3.6,
+          'target_2': 3.7,
+          'risk_level': 'متوسط',
+          'confirmed_factors': 8,
+          'total_factors': 17,
+          'reasons_ar': ['حجم متسارع'],
+        },
+        'extended_alert': {
+          'symbol': 'SUGP',
+          'name': 'Su Group',
+          'price': 4.28,
+          'change_percent': 54.23,
+          'score': 88,
+          'status': 'CANCELLED',
+          'status_ar': 'أُلغيت',
+          'appeared_at': '2026-01-01T00:00:00Z',
+          'expires_at': '',
+          'entry_zone': 2.8,
+          'stop_loss': 2.7,
+          'target_1': 4.4,
+          'target_2': 4.5,
+          'risk_level': 'مرتفع',
+          'reasons_ar': [],
+          'session': 'PRE_MARKET',
+          'extended_gap_pct': 54.23,
+          'detection_stage': 'EXPLOSIVE',
+          'previous_close': 2.775,
+          'extended_price': 4.28,
+          'extended_volume': 120000,
+          'catalyst_title_ar': 'امتثال ناسdaq',
+        },
+        'signals': [
+          {
+            'symbol': 'CISS',
+            'name': 'CISS',
+            'price': 2.1,
+            'change_percent': 4,
+            'score': 68,
+            'status': 'WATCH',
+            'status_ar': 'مراقبة',
+            'appeared_at': '2026-01-01T00:00:00Z',
+            'expires_at': '2026-01-01T00:15:00Z',
+            'entry_zone': 2.1,
+            'entry_zone_low': 2.0,
+            'entry_zone_high': 2.2,
+            'stop_loss': 1.9,
+            'target_1': 2.3,
+            'target_2': 2.4,
+            'risk_level': 'متوسط',
+            'confirmed_factors': 6,
+            'total_factors': 17,
+            'reasons_ar': ['ضغط شرائي'],
+          },
+        ],
+      });
+
+      final jumps = resp.confirmedJumps(limit: 3);
+      expect(jumps.length, 3);
+      expect(jumps[0].symbol, 'SUGP');
+      expect(jumps[0].isRealNewsJump, isTrue);
+      expect(jumps[1].symbol, 'BTCT');
+      expect(jumps[1].isRealWatchJump, isTrue);
+      expect(jumps[2].symbol, 'CISS');
+    });
+
+    test('confirmedJumps empty when no real jumps', () {
+      final resp = OpportunityNowResponse.fromJson({
+        'status': 'NONE',
+        'market_status': 'CLOSED',
+        'market_open': false,
+        'scan_interval_seconds': 15,
+        'message': 'السوق مغلق',
+        'signals': [],
+        'top_signal': null,
+      });
+      expect(resp.confirmedJumps(), isEmpty);
+      expect(resp.hasConfirmedJumps, isFalse);
+    });
+
     test('market closed message preserved', () {
       final resp = OpportunityNowResponse.fromJson({
         'status': 'NONE',

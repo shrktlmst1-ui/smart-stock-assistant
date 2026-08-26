@@ -5,68 +5,73 @@ import '../theme/app_theme.dart';
 
 class ExtendedAlertHomeCard extends StatelessWidget {
   final OpportunityNowSignal? alert;
+  final VoidCallback? onTap;
 
-  const ExtendedAlertHomeCard({super.key, required this.alert});
+  const ExtendedAlertHomeCard({super.key, required this.alert, this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final top = alert;
-    if (top == null || !top.isValidExtendedAlert) {
+    if (top == null || !top.isRealNewsJump) {
       return const SizedBox.shrink();
     }
 
-    final isCancelled = top.isCancelled;
-    final accent = isCancelled ? AppTheme.danger : const Color(0xFFD29922);
+    final accent = const Color(0xFFD29922);
     final gapPrefix = top.extendedGapPct >= 0 ? '+' : '';
+    final sessionTag = top.session == 'PRE_MARKET' || top.session == 'AFTER_HOURS'
+        ? top.session
+        : top.sessionLabelAr;
 
     return Card(
       color: AppTheme.surface,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: accent.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Icon(Icons.newspaper_outlined, color: accent, size: 26),
-                ),
-                const SizedBox(width: 12),
-                const Expanded(
-                  child: Text(
-                    'قفزة خبرية',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textPrimary,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: accent.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(10),
                     ),
+                    child: Icon(Icons.newspaper_outlined, color: accent, size: 26),
                   ),
-                ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      top.symbol,
-                      style: const TextStyle(
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'قفزة خبرية',
+                      style: TextStyle(
+                        fontSize: 18,
                         fontWeight: FontWeight.bold,
-                        fontSize: 16,
                         color: AppTheme.textPrimary,
                       ),
                     ),
-                    Text(
-                      '\$${top.price.toStringAsFixed(2)} ($gapPrefix${top.extendedGapPct.toStringAsFixed(1)}%)',
-                      style: TextStyle(color: accent, fontWeight: FontWeight.w600),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            if (isCancelled) ...[
+                  ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        top.symbol,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      Text(
+                        '$gapPrefix${top.extendedGapPct.toStringAsFixed(1)}%',
+                        style: TextStyle(color: accent, fontWeight: FontWeight.w700, fontSize: 15),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
               const SizedBox(height: 8),
               const Text(
                 'تم رصد القفزة — لا تطارد السهم',
@@ -76,56 +81,51 @@ class ExtendedAlertHomeCard extends StatelessWidget {
                   fontSize: 14,
                 ),
               ),
-            ],
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: [
-                if (top.sessionLabelAr.isNotEmpty)
-                  _Chip(label: top.sessionLabelAr, color: AppTheme.primary),
-                if (top.detectionStage.isNotEmpty)
-                  _Chip(label: top.detectionStage, color: accent),
-                if (top.previousClose > 0)
-                  _Chip(
-                    label: 'إغلاق ${top.previousClose.toStringAsFixed(2)}',
-                    color: AppTheme.textSecondary,
-                  ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  if (sessionTag.isNotEmpty)
+                    _Chip(label: sessionTag, color: AppTheme.primary),
+                  if (top.detectionStage.isNotEmpty)
+                    _Chip(
+                      label: top.detectionStage == 'EXPLOSIVE' ? 'EXPLOSIVE' : top.detectionStage,
+                      color: accent,
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _RowMetric('Current Price', '\$${top.price.toStringAsFixed(2)}'),
+              if (top.previousClose > 0)
+                _RowMetric('Previous Close', '\$${top.previousClose.toStringAsFixed(2)}'),
+              if (top.previousClose > 0)
+                _RowMetric(
+                  'Move From Close To Current',
+                  '\$${top.previousClose.toStringAsFixed(2)} → \$${top.extendedPrice.toStringAsFixed(2)}',
+                ),
+              _RowMetric(
+                'Volume',
+                top.volumeUnknown || top.extendedVolume <= 0
+                    ? 'غير متاح'
+                    : _formatVolume(top.extendedVolume),
+              ),
+              if (top.catalystTitleAr.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  top.catalystTitleAr,
+                  style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+                ),
               ],
-            ),
-            if (top.previousClose > 0) ...[
-              const SizedBox(height: 6),
-              Text(
-                'من إغلاق ${top.previousClose.toStringAsFixed(2)} → ${top.extendedPrice.toStringAsFixed(2)}',
-                style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-              ),
+              if (top.riskFlagsAr.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  top.riskFlagsAr.join(' • '),
+                  style: const TextStyle(color: AppTheme.danger, fontSize: 12),
+                ),
+              ],
             ],
-            const SizedBox(height: 6),
-            Text(
-              top.volumeUnknown || top.extendedVolume <= 0
-                  ? 'الحجم: غير متاح'
-                  : 'الحجم: ${_formatVolume(top.extendedVolume)}',
-              style: TextStyle(
-                color: top.volumeUnknown ? AppTheme.danger : AppTheme.textSecondary,
-                fontSize: 12,
-                fontWeight: top.volumeUnknown ? FontWeight.w600 : FontWeight.normal,
-              ),
-            ),
-            if (top.catalystTitleAr.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                'الخبر: ${top.catalystTitleAr}',
-                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
-              ),
-            ],
-            if (top.riskFlagsAr.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                top.riskFlagsAr.join(' • '),
-                style: const TextStyle(color: AppTheme.danger, fontSize: 12),
-              ),
-            ],
-          ],
+          ),
         ),
       ),
     );
@@ -135,6 +135,27 @@ class ExtendedAlertHomeCard extends StatelessWidget {
     if (vol >= 1000000) return '${(vol / 1000000).toStringAsFixed(1)}M';
     if (vol >= 1000) return '${(vol / 1000).toStringAsFixed(0)}K';
     return vol.toString();
+  }
+}
+
+class _RowMetric extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _RowMetric(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+          Text(value, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
   }
 }
 
