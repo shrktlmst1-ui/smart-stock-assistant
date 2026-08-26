@@ -173,6 +173,9 @@ PREMOVE_LATE_EXTENSION_PCT: float = float(os.getenv("PREMOVE_LATE_EXTENSION_PCT"
 PREMOVE_BAR_CACHE_TTL: int = int(os.getenv("PREMOVE_BAR_CACHE_TTL", "60"))
 PREMOVE_BAR_CACHE_MAX: int = int(os.getenv("PREMOVE_BAR_CACHE_MAX", "200"))
 
+# Jump Alert Registry — sticky alerts independent of scan snapshot
+JUMP_ALERT_TTL_SECONDS: int = int(os.getenv("JUMP_ALERT_TTL_SECONDS", "1800"))
+
 # API snapshot cache + memory bounds (performance only — no signal logic)
 SYMBOL_CACHE_MAX_ENTRIES: int = int(os.getenv("SYMBOL_CACHE_MAX_ENTRIES", "400"))
 TICKER_META_CACHE_MAX_ENTRIES: int = int(os.getenv("TICKER_META_CACHE_MAX_ENTRIES", "2000"))

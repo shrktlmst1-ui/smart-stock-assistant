@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from models.stock import StockOpportunity, StockSnapshot
+from models.jump_alert import JumpAlert
 
 MarketStatus = Literal["PRE_MARKET", "REGULAR", "AFTER_HOURS", "CLOSED"]
 
@@ -151,3 +152,4 @@ class OpportunitiesResponse(BaseModel):
     partial_data: bool = False
     failed_symbols_count: int = 0
     cache_hit: bool = False
+    jump_alerts: list[JumpAlert] = Field(default_factory=list)

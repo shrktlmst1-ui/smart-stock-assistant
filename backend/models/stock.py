@@ -83,6 +83,8 @@ class StockOpportunity(BaseModel):
     total_factors: int = 17
     safety_passed: bool = False
     status_reason_ar: str = ""
+    is_sticky_jump_alert: bool = False
+    jump_alert_id: str = ""
 
 
 class StockAnalysis(BaseModel):

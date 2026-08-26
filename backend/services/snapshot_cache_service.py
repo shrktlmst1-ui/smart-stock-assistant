@@ -223,7 +223,10 @@ def get_opportunities_response(
         age_s if entry else -1,
         1 if _refresh_in_progress else 0,
     )
-    return response
+
+    from services.jump_alert_registry import jump_alert_registry
+
+    return jump_alert_registry.merge_into_response(response, limit=limit)
 
 
 def invalidate_opportunities_cache() -> None:
@@ -331,6 +334,16 @@ def _run_refresh(
     with _snapshot_lock:
         global _cached
         _cached = entry
+
+    from services.jump_alert_registry import jump_alert_registry
+
+    scan_syms = {o.symbol.upper() for o in response.opportunities}
+    active = jump_alert_registry.get_active_alerts()
+    merged_syms = scan_syms | {a.symbol.upper() for a in active}
+    jump_alert_registry.log_refresh_cycle(
+        scan_opportunity_symbols=scan_syms,
+        merged_symbols=merged_syms,
+    )
 
     logger.info(
         "[PERF] snapshot_updated scan_id=%s scanned=%d candidates=%d deep=%d partial=%s",

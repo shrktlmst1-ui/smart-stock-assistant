@@ -36,6 +36,48 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _liveTimer;
 
   static const _pollSeconds = 12;
+  final Map<String, JumpAlert> _stickyJumpAlerts = {};
+
+  OpportunitiesDashboard _mergeStickyDashboard(OpportunitiesDashboard dashboard) {
+    for (final alert in dashboard.jumpAlerts) {
+      if (alert.isActive && !alert.isExpired) {
+        _stickyJumpAlerts[alert.symbol] = alert;
+      }
+    }
+    _stickyJumpAlerts.removeWhere((_, alert) => alert.isExpired);
+
+    if (_stickyJumpAlerts.isEmpty) return dashboard;
+
+    final bySymbol = <String, StockOpportunity>{};
+    for (final opp in dashboard.opportunities) {
+      bySymbol[opp.symbol] = opp;
+    }
+    for (final alert in _stickyJumpAlerts.values) {
+      bySymbol.putIfAbsent(alert.symbol, alert.toStockOpportunity);
+    }
+
+    final merged = bySymbol.values.toList()
+      ..sort((a, b) {
+        if (a.isStickyJumpAlert != b.isStickyJumpAlert) {
+          return a.isStickyJumpAlert ? -1 : 1;
+        }
+        return b.score.compareTo(a.score);
+      });
+
+    return OpportunitiesDashboard(
+      marketStatus: dashboard.marketStatus,
+      opportunities: merged,
+      watchlistCandidates: dashboard.watchlistCandidates,
+      jumpAlerts: _stickyJumpAlerts.values.toList(),
+      explanation: dashboard.explanation,
+      noSignalReason: dashboard.noSignalReason,
+      debug: dashboard.debug,
+      apiStatus: dashboard.apiStatus,
+      isRefreshing: dashboard.isRefreshing,
+      partialData: dashboard.partialData,
+      cacheHit: dashboard.cacheHit,
+    );
+  }
 
   ApiService get _api => context.read<AppState>().api;
 
@@ -141,7 +183,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await _loadOpportunityNow();
       if (mounted) {
         setState(() {
-          _dashboard = dashboard;
+          _dashboard = _mergeStickyDashboard(dashboard);
           _pulseListing = pulseList;
           _pulseState = pulseError != null
               ? PulseServiceState.error

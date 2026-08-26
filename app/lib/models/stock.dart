@@ -122,6 +122,8 @@ class StockOpportunity {
   final int totalFactors;
   final bool safetyPassed;
   final String statusReasonAr;
+  final bool isStickyJumpAlert;
+  final String jumpAlertId;
 
   StockOpportunity({
     required this.symbol,
@@ -135,6 +137,8 @@ class StockOpportunity {
     this.totalFactors = 17,
     this.safetyPassed = false,
     this.statusReasonAr = '',
+    this.isStickyJumpAlert = false,
+    this.jumpAlertId = '',
   });
 
   factory StockOpportunity.fromJson(Map<String, dynamic> json) {
@@ -150,6 +154,85 @@ class StockOpportunity {
       totalFactors: (json['total_factors'] as num?)?.toInt() ?? 17,
       safetyPassed: readJsonBool(json, ['safety_passed', 'safetyPassed']),
       statusReasonAr: json['status_reason_ar'] as String? ?? '',
+      isStickyJumpAlert: readJsonBool(json, ['is_sticky_jump_alert', 'isStickyJumpAlert']),
+      jumpAlertId: json['jump_alert_id'] as String? ?? '',
+    );
+  }
+}
+
+class JumpAlert {
+  final String alertId;
+  final String symbol;
+  final String name;
+  final String createdAt;
+  final String expiresAt;
+  final double price;
+  final double changePercent;
+  final String stage;
+  final int score;
+  final String aiSignal;
+  final String status;
+  final String statusReasonAr;
+
+  const JumpAlert({
+    required this.alertId,
+    required this.symbol,
+    required this.name,
+    required this.createdAt,
+    required this.expiresAt,
+    required this.price,
+    required this.changePercent,
+    required this.stage,
+    required this.score,
+    required this.aiSignal,
+    required this.status,
+    required this.statusReasonAr,
+  });
+
+  factory JumpAlert.fromJson(Map<String, dynamic> json) {
+    return JumpAlert(
+      alertId: json['alert_id'] as String? ?? '',
+      symbol: json['symbol'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      createdAt: json['created_at'] as String? ?? '',
+      expiresAt: json['expires_at'] as String? ?? '',
+      price: (json['price'] as num?)?.toDouble() ?? 0,
+      changePercent: (json['change_percent'] as num?)?.toDouble() ?? 0,
+      stage: json['stage'] as String? ?? '',
+      score: (json['score'] as num?)?.toInt() ?? 0,
+      aiSignal: json['ai_signal'] as String? ?? '',
+      status: json['status'] as String? ?? 'ACTIVE',
+      statusReasonAr: json['status_reason_ar'] as String? ?? '',
+    );
+  }
+
+  bool get isActive => status == 'ACTIVE';
+
+  DateTime? get expiresAtDateTime {
+    if (expiresAt.isEmpty) return null;
+    return DateTime.tryParse(expiresAt);
+  }
+
+  bool get isExpired {
+    final exp = expiresAtDateTime;
+    if (exp == null) return false;
+    return DateTime.now().toUtc().isAfter(exp.toUtc());
+  }
+
+  StockOpportunity toStockOpportunity() {
+    return StockOpportunity(
+      symbol: symbol,
+      name: name.isNotEmpty ? name : symbol,
+      price: price,
+      changePercent: changePercent,
+      score: score,
+      trend: changePercent > 0.5 ? 'صاعد' : 'محايد',
+      riskLevel: 'متوسط',
+      statusReasonAr: statusReasonAr.isNotEmpty
+          ? statusReasonAr
+          : '🚀 قفزة محفوظة | Stage $stage',
+      isStickyJumpAlert: true,
+      jumpAlertId: alertId,
     );
   }
 }
@@ -234,6 +317,7 @@ class OpportunitiesDashboard {
   final String marketStatus;
   final List<StockOpportunity> opportunities;
   final List<StockOpportunity> watchlistCandidates;
+  final List<JumpAlert> jumpAlerts;
   final String explanation;
   final String noSignalReason;
   final ScannerStageCounts debug;
@@ -246,6 +330,7 @@ class OpportunitiesDashboard {
     required this.marketStatus,
     required this.opportunities,
     required this.watchlistCandidates,
+    this.jumpAlerts = const [],
     required this.explanation,
     required this.noSignalReason,
     required this.debug,
@@ -256,7 +341,7 @@ class OpportunitiesDashboard {
   });
 
   bool get isSoftEmpty =>
-      apiStatus == 'NO_OPPORTUNITIES' ||
+      (apiStatus == 'NO_OPPORTUNITIES' && !hasActiveJumpAlerts) ||
       apiStatus == 'REFRESHING' ||
       apiStatus == 'PARTIAL_DATA' ||
       apiStatus == 'DATA_STALE';
@@ -264,14 +349,24 @@ class OpportunitiesDashboard {
   factory OpportunitiesDashboard.fromJson(Map<String, dynamic> json) {
     final live = json['opportunities'] as List<dynamic>? ?? [];
     final watch = json['watchlist_candidates'] as List<dynamic>? ?? [];
+    final jumpRaw = json['jump_alerts'] as List<dynamic>? ?? [];
+    final jumpAlerts = jumpRaw
+        .map((e) => JumpAlert.fromJson(e as Map<String, dynamic>))
+        .where((a) => a.isActive && !a.isExpired)
+        .toList();
+    var opportunities = live
+        .map((e) => StockOpportunity.fromJson(e as Map<String, dynamic>))
+        .toList();
+    if (opportunities.isEmpty && jumpAlerts.isNotEmpty) {
+      opportunities = jumpAlerts.map((a) => a.toStockOpportunity()).toList();
+    }
     return OpportunitiesDashboard(
       marketStatus: json['market_status'] as String? ?? 'CLOSED',
-      opportunities: live
-          .map((e) => StockOpportunity.fromJson(e as Map<String, dynamic>))
-          .toList(),
+      opportunities: opportunities,
       watchlistCandidates: watch
           .map((e) => StockOpportunity.fromJson(e as Map<String, dynamic>))
           .toList(),
+      jumpAlerts: jumpAlerts,
       explanation: json['explanation'] as String? ?? '',
       noSignalReason: json['no_signal_reason'] as String? ?? '',
       debug: ScannerStageCounts.fromJson(json['debug'] as Map<String, dynamic>?),
@@ -282,11 +377,18 @@ class OpportunitiesDashboard {
     );
   }
 
-  List<StockOpportunity> get displayItems =>
-      opportunities.isNotEmpty ? opportunities : watchlistCandidates;
+  List<StockOpportunity> get displayItems {
+    if (opportunities.isNotEmpty) return opportunities;
+    if (jumpAlerts.isNotEmpty) {
+      return jumpAlerts.map((a) => a.toStockOpportunity()).toList();
+    }
+    return watchlistCandidates;
+  }
+
+  bool get hasActiveJumpAlerts => jumpAlerts.any((a) => a.isActive && !a.isExpired);
 
   bool get showingWatchlist =>
-      opportunities.isEmpty && watchlistCandidates.isNotEmpty;
+      opportunities.isEmpty && watchlistCandidates.isNotEmpty && !hasActiveJumpAlerts;
 }
 
 class SearchResult {

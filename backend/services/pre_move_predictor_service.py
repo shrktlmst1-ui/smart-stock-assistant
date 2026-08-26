@@ -452,6 +452,9 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
 
     if sig.validated and sig.status in ("EARLY_ENTRY", "HIGH_CONVICTION_EARLY"):
         jump_engine_monitor.log_jump_qualified(sym)
+        from services.jump_alert_registry import jump_alert_registry
+
+        jump_alert_registry.create_from_signal(sig)
 
     return sig
 
