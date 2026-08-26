@@ -53,8 +53,8 @@ def update_stage_state(
     state = get_or_create_state(symbol, session_date)
     with _lock:
         prev_stage = state.current_stage
+        now = time.time()
         state.append(snap)
-        state.last_updated = time.time()
 
         if new_stage != prev_stage:
             state.stage_entered_at = snap.timestamp
@@ -62,8 +62,16 @@ def update_stage_state(
             if new_stage != "PRE_BREAKOUT":
                 state.pb_consecutive_windows = 0
         else:
-            state.minutes_in_stage += 1.0
+            elapsed_min = 0.0
+            if state.last_updated > 0:
+                elapsed_min = max(0.0, (now - state.last_updated) / 60.0)
+            else:
+                from config import SCANNER_TICK_SECONDS
 
+                elapsed_min = SCANNER_TICK_SECONDS / 60.0
+            state.minutes_in_stage += elapsed_min
+
+        state.last_updated = now
         state.current_stage = new_stage  # type: ignore[assignment]
         if _stage_rank(new_stage) > _stage_rank(state.peak_stage):
             state.peak_stage = new_stage  # type: ignore[assignment]

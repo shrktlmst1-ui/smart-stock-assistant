@@ -532,6 +532,66 @@ def parse_snapshot_price(
     return sp.price, sp.volume, sp.change, sp.change_percent, sp
 
 
+def resolve_jump_execution_price(
+    item: dict,
+    *,
+    symbol: str,
+    session: MarketSession | None = None,
+    nbbo: dict | None = None,
+) -> tuple[SessionPrice, dict]:
+    """
+    Jump pipeline price — prefer WS live tick, then REST NBBO/trade fallbacks.
+    Returns (SessionPrice, diagnostic dict).
+    """
+    from services.live_price_registry import live_price_registry
+
+    sym = symbol.upper()
+    market_session = session or get_us_market_session()
+
+    merged_item = dict(item)
+    try:
+        from services.market_scanner_service import market_scanner
+
+        cached = market_scanner._snapshot_raw.get(sym)
+        if cached:
+            merged_item = dict(cached)
+    except Exception:
+        pass
+
+    merged_item = live_price_registry.patch_snapshot_item(merged_item, sym)
+    sp = resolve_session_price(merged_item, session=market_session, nbbo=nbbo)
+
+    ws_age = live_price_registry.ws_message_age_seconds()
+    snap_ts = _snapshot_timestamp(merged_item)
+    snap_age = _age_seconds(snap_ts) if snap_ts else None
+    live_inspect = live_price_registry.inspect(sym) if market_session == "REGULAR" else {}
+
+    diag = {
+        "symbol": sym,
+        "price_source": sp.source,
+        "price": sp.price,
+        "last_ws_message_age": round(ws_age, 1) if ws_age is not None else None,
+        "snapshot_age": round(snap_age, 1) if snap_age is not None else None,
+        "STALE_PRICE": sp.is_stale,
+        "ws_connected": live_price_registry.status.connected,
+        "ws_subscribed": sym in live_price_registry.status.subscribed_symbols,
+        "live_trade_fresh": (live_inspect.get("live_trade") or {}).get("fresh"),
+    }
+    logger.info(
+        "JUMP_PRICE_DIAGNOSTIC symbol=%s price_source=%s price=%s last_ws_message_age=%s "
+        "snapshot_age=%s STALE_PRICE=%s ws_connected=%s ws_subscribed=%s",
+        sym,
+        diag["price_source"],
+        diag["price"],
+        diag["last_ws_message_age"],
+        diag["snapshot_age"],
+        diag["STALE_PRICE"],
+        diag["ws_connected"],
+        diag["ws_subscribed"],
+    )
+    return sp, diag
+
+
 def invalidate_price_caches() -> None:
     """Drop cached symbol/bar data when market session changes."""
     try:

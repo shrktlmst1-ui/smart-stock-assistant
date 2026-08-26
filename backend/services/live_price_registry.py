@@ -88,6 +88,30 @@ class LivePriceRegistry:
         self._status.subscribed_symbols = {s.upper() for s in symbols if s}
         logger.info("[LIVE_PRICE] subscribed count=%d", len(self._status.subscribed_symbols))
 
+    def set_hub_health(
+        self,
+        *,
+        shards_connected: int,
+        shards_total: int,
+        subscribed: set[str],
+    ) -> None:
+        """Update feed status from shared stocks WS hub (partial shard OK)."""
+        was_connected = self._status.connected
+        self._status.connected = shards_connected > 0
+        self._status.authenticated = shards_connected > 0
+        if subscribed:
+            self._status.subscribed_symbols = subscribed
+        if shards_connected > 0 and not was_connected:
+            logger.info(
+                "[LIVE_PRICE] hub shards connected %d/%d symbols=%d",
+                shards_connected,
+                shards_total,
+                len(self._status.subscribed_symbols),
+            )
+        elif shards_connected == 0 and shards_total > 0 and was_connected:
+            self._status.last_disconnect_at = datetime.now(timezone.utc)
+            logger.warning("[LIVE_PRICE] all hub shards disconnected — REST fallback active")
+
     def note_reconnect(self) -> None:
         self._status.reconnect_count += 1
         logger.info("[LIVE_PRICE] reconnect attempt=%d", self._status.reconnect_count)
@@ -262,6 +286,24 @@ class LivePriceRegistry:
     def mark_stale_if_feed_down(self) -> None:
         if not self._status.connected:
             logger.info("[LIVE_PRICE] stale_price feed_down — no new live ticks")
+
+    def patch_snapshot_item(self, item: dict, symbol: str) -> dict:
+        """Merge freshest WS tick into snapshot item before price resolution."""
+        sym = symbol.upper()
+        patched = dict(item)
+        tick = self._ticks.get(sym) or self._quotes.get(sym)
+        if not tick or tick.price <= 0:
+            return patched
+        ts_ns = int((tick.exchange_timestamp or tick.received_at).timestamp() * 1_000_000_000)
+        patched["lastTrade"] = {"p": tick.price, "t": ts_ns}
+        patched["updated"] = ts_ns
+        return patched
+
+    def ws_message_age_seconds(self) -> float | None:
+        ts = self._status.last_message_at
+        if not ts:
+            return None
+        return _age_seconds(ts)
 
 
 live_price_registry = LivePriceRegistry()

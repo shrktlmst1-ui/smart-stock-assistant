@@ -120,6 +120,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _opportunityLoading = false;
         });
       }
+      await _fetchJumpAlerts();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -151,18 +152,32 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _fetchJumpAlerts() async {
+    try {
+      final dashboard = await _api.fetchOpportunitiesDashboard(
+        limit: 10,
+        backgroundRefresh: false,
+      );
+      if (mounted) {
+        setState(() {
+          _dashboard = _mergeStickyDashboard(dashboard);
+          _error = null;
+        });
+      }
+    } catch (e) {
+      if (mounted && _dashboard == null) {
+        setState(() => _error = _friendlyError(e));
+      }
+    }
+  }
+
   Future<void> _load({bool backgroundRefresh = false}) async {
     setState(() {
-      _loading = _dashboard == null;
-      if (_dashboard == null) _error = null;
+      _loading = false;
+      _error = null;
       _pulseState = PulseServiceState.loading;
     });
     try {
-      final data = context.read<AppState>().stockData;
-      final dashboard = await data.getOpportunitiesDashboard(
-        limit: 20,
-        backgroundRefresh: backgroundRefresh,
-      );
       var pulseList = const MarketPulseListResponse(enabled: false, alerts: [], count: 0);
       var pulseHealth = const MarketPulseHealth(
         enabled: false,
@@ -181,9 +196,9 @@ class _HomeScreenState extends State<HomeScreen> {
         pulseError = _friendlyError(e);
       }
       await _loadOpportunityNow();
+      await _fetchJumpAlerts();
       if (mounted) {
         setState(() {
-          _dashboard = _mergeStickyDashboard(dashboard);
           _pulseListing = pulseList;
           _pulseState = pulseError != null
               ? PulseServiceState.error
@@ -194,18 +209,9 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          if (_dashboard != null && _dashboard!.isSoftEmpty) {
-            _loading = false;
-            _error = null;
-          } else if (_dashboard != null) {
-            _loading = false;
-            _error = null;
-          } else {
-            _dashboard = null;
-            _loading = false;
-            _error = _friendlyError(e);
-            _pulseState = PulseServiceState.error;
-          }
+          _loading = false;
+          _error = _friendlyError(e);
+          _pulseState = PulseServiceState.error;
         });
       }
     }
@@ -359,85 +365,23 @@ class _HomeScreenState extends State<HomeScreen> {
     return iso;
   }
 
-  Widget _buildOpportunitiesSection() {
-    final dashboard = _dashboard;
-    final items = dashboard?.displayItems ?? [];
-    final showingWatchlist = dashboard?.showingWatchlist ?? false;
-
-    if (_loading) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 32),
-        child: Center(
-          child: Column(
-            children: [
-              CircularProgressIndicator(color: AppTheme.primary),
-              SizedBox(height: 16),
-              Text(
-                'جاري تحميل الفرص المباشرة...',
-                style: TextStyle(color: AppTheme.textSecondary),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    if (_error != null && _dashboard == null) {
-      return Card(
-        color: AppTheme.danger.withOpacity(0.12),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'خطأ في الاتصال بالخادم',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.danger,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _error!,
-                style: const TextStyle(
-                  color: AppTheme.textSecondary,
-                  fontSize: 13,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
+  Widget _buildJumpAlertsSection() {
+    final jumpItems = (_dashboard?.jumpAlerts ?? [])
+        .where((a) => a.isActive && !a.isExpired)
+        .map((a) => a.toStockOpportunity())
+        .toList();
+    final sticky = (_dashboard?.opportunities ?? [])
+        .where((o) => o.isStickyJumpAlert)
+        .toList();
+    final items = sticky.isNotEmpty ? sticky : jumpItems;
 
     if (items.isEmpty) {
       return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 32),
-        child: Column(
-          children: [
-            Icon(
-              Icons.insights_outlined,
-              size: 56,
-              color: AppTheme.textSecondary,
-            ),
-            SizedBox(height: 16),
-            Text(
-              'لا توجد فرص عالية الجودة حالياً',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary,
-              ),
-            ),
-            SizedBox(height: 8),
-            Text(
-              'راجع ملخص الماسح أعلاه لأعداد المراحل وأسباب الرفض.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: AppTheme.textSecondary),
-            ),
-          ],
+        padding: EdgeInsets.symmetric(vertical: 16),
+        child: Text(
+          'لا توجد قفزات Jump نشطة — المحرك يعمل في الخلفية',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: AppTheme.textSecondary),
         ),
       );
     }
@@ -445,32 +389,24 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SectionHeader(
-          title: showingWatchlist ? 'قائمة المراقبة' : 'أفضل الفرص',
-          subtitle: showingWatchlist
-              ? 'مرتبة حسب درجة التحليل (قد لا تجتاز جميع الفلاتر)'
-              : 'بيانات مباشرة من Polygon',
+        const SectionHeader(
+          title: 'قفزات Jump',
+          subtitle: 'تنبيهات محفوظة من محرك القفزات',
         ),
         ...List.generate(items.length, (i) {
           final stock = items[i];
-          MarketPulseAlert? pulse;
-          for (final a in _validPulseAlerts) {
-            if (a.symbol == stock.symbol) {
-              pulse = a;
-              break;
-            }
-          }
           return StockCard(
             stock: stock,
             rank: i + 1,
-            pulseScore: pulse?.score,
-            pulseDecision: pulse?.displayDecision,
-            pulseHeadline: pulse?.headline,
             onTap: () => _openAnalysis(stock.symbol),
           );
         }),
       ],
     );
+  }
+
+  Widget _buildOpportunitiesSection() {
+    return _buildJumpAlertsSection();
   }
 
   @override

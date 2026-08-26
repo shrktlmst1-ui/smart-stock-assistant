@@ -432,7 +432,7 @@ async def opportunities(
             limit=limit,
             state=state,
             session=session,
-            trigger_refresh=True,
+            trigger_refresh=background_refresh,
             force_refresh=background_refresh,
         )
 

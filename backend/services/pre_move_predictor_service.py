@@ -57,7 +57,11 @@ from services.market_session import ET, get_us_market_session
 from services.pre_move_stage_store import clear_stale_states, get_or_create_state, update_stage_state
 from services.news_service import fetch_stock_news
 from services.scanner_filters import parse_snapshot_item
-from services.session_price import STALE_PRICE_REASON_AR, STALE_PRICE_STATUS, resolve_session_price
+from services.session_price import (
+    STALE_PRICE_REASON_AR,
+    STALE_PRICE_STATUS,
+    resolve_jump_execution_price,
+)
 from services.jump_engine_monitor import jump_engine_monitor
 
 logger = logging.getLogger(__name__)
@@ -72,6 +76,11 @@ def _normalize_snapshot(raw: dict[str, dict] | list[dict] | None) -> dict[str, d
 
 _bar_cache: dict[str, tuple[float, pd.DataFrame]] = {}
 _last_result: PreMoveScanResult | None = None
+_last_premove_monitor_symbols: list[str] = []
+
+
+def get_premove_monitor_symbols() -> list[str]:
+    return list(_last_premove_monitor_symbols)
 
 
 def get_last_pre_move_scan() -> PreMoveScanResult | None:
@@ -164,6 +173,8 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
 
     client = get_client()
     try:
+        from services.live_price_registry import live_price_registry
+
         async with asyncio.timeout(20):
             nbbo: dict = {}
             try:
@@ -171,7 +182,40 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
             except Exception:
                 pass
 
-            sp = resolve_session_price(item, session=session, nbbo=nbbo)  # type: ignore[arg-type]
+            sp, _price_diag = resolve_jump_execution_price(
+                item, symbol=sym, session=session, nbbo=nbbo,  # type: ignore[arg-type]
+            )
+            if sp.is_stale:
+                try:
+                    fresh = await client.get_snapshot(sym)
+                    if fresh:
+                        item = {**item, **fresh, "ticker": sym}
+                        from services.market_scanner_service import market_scanner
+
+                        market_scanner._snapshot_raw[sym] = item
+                    nbbo = await client.get_last_nbbo(sym)
+                except Exception:
+                    pass
+                sp, _price_diag = resolve_jump_execution_price(
+                    item, symbol=sym, session=session, nbbo=nbbo,  # type: ignore[arg-type]
+                )
+            if sp.is_stale:
+                if (
+                    live_price_registry.status.connected
+                    and sym in live_price_registry.status.subscribed_symbols
+                ):
+                    for _ in range(6):
+                        live = live_price_registry.resolve_live(
+                            sym, prev_close=_safe_float((item.get("prevDay") or {}).get("c")),
+                        )
+                        if live and live.is_valid:
+                            patched = live_price_registry.patch_snapshot_item(item, sym)
+                            sp, _price_diag = resolve_jump_execution_price(
+                                patched, symbol=sym, session=session, nbbo=nbbo,  # type: ignore[arg-type]
+                            )
+                            if not sp.is_stale:
+                                break
+                        await asyncio.sleep(0.25)
             if sp.is_stale:
                 jump_engine_monitor.log_jump_rejected(sym, STALE_PRICE_STATUS)
                 return PreMoveSignal(
@@ -374,6 +418,19 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
 
     stage_state = update_stage_state(sym, session_date, snap, new_lifecycle, stage_metrics)
 
+    logger.info(
+        "JUMP_STAGE_STATE symbol=%s previous_stage=%s current_stage=%s stage_since_min=%.2f "
+        "persistence_min=%d premove_score=%d stage_prog=%.1f trigger_price=%.4f",
+        sym,
+        prior_stage,
+        new_lifecycle,
+        stage_state.minutes_in_stage,
+        int(stage_state.minutes_in_stage),
+        score,
+        stage_metrics.stage_progression_score,
+        trigger,
+    )
+
     status = lifecycle_to_status(
         new_lifecycle,
         progression_score=stage_metrics.stage_progression_score,
@@ -482,8 +539,31 @@ async def scan_pre_move_async(
     stats.scanned = min(len(raw), PREMOVE_FAST_SCAN_LIMIT)
     stats.early_candidates = len(candidates)
 
+    global _last_premove_monitor_symbols
+    _last_premove_monitor_symbols = [c["symbol"].upper() for c in candidates[:PREMOVE_DEEP_LIMIT]]
+
+    try:
+        from services.market_scanner_service import market_scanner as _scanner
+        from services.stocks_ws_hub import stocks_ws_hub
+
+        if stocks_ws_hub.is_running():
+            rank = list(_scanner._rank_pool[:50])
+            monitor = list(dict.fromkeys(rank + _last_premove_monitor_symbols))
+            stocks_ws_hub.set_consumer("jump", monitor, ("T", "Q"))
+    except Exception:
+        pass
+
     deep_n = deep_limit or PREMOVE_DEEP_LIMIT
     to_analyze = candidates[:deep_n]
+
+    if market_session == "REGULAR":
+        from services.live_price_registry import live_price_registry
+
+        for _ in range(16):
+            if live_price_registry.status.connected:
+                break
+            await asyncio.sleep(0.25)
+        await asyncio.sleep(0.8)
 
     signals: list[PreMoveSignal] = []
     rejected: list[PreMoveSignal] = []

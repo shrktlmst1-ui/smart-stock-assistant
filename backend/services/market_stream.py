@@ -1,29 +1,22 @@
-"""Real-time market stream — US scanner with 1s fast tick."""
+"""Real-time market stream — US scanner with 15s fast tick + shared WS hub."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-import websockets
-
-from config import (
-    POLYGON_WS_URL,
-    SCANNER_TICK_SECONDS,
-    WEBSOCKET_ENABLED,
-    get_polygon_api_key,
-)
-from services.connection_service import get_connection_status, _wait_ws_auth
+from config import SCANNER_TICK_SECONDS, WEBSOCKET_ENABLED, get_polygon_api_key
+from services.connection_service import get_connection_status
 from services.jump_engine_monitor import jump_engine_monitor
-from services.live_confirmation_engine import LIVE_MONITOR_POOL, live_confirmation_engine
+from services.live_confirmation_engine import live_confirmation_engine
 from services.live_price_registry import live_price_registry
 from services.market_scanner_service import market_scanner
 from services.opportunity_now_service import sync_engine_from_scanner
 from services.polygon_client import PolygonClient
+from services.stocks_ws_hub import stocks_ws_hub
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +27,7 @@ class MarketStream:
     def __init__(self) -> None:
         self.client = PolygonClient()
         self._running = False
-        self._task: asyncio.Task | None = None
+        self._hub_started = False
         self._tick_task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
         self._broadcast: BroadcastFn | None = None
@@ -58,26 +51,44 @@ class MarketStream:
         self._running = True
 
         status = get_connection_status()
-        use_ws = WEBSOCKET_ENABLED and status.websocket_available
+        use_ws = WEBSOCKET_ENABLED and bool(get_polygon_api_key())
+        if use_ws and not status.websocket_available:
+            logger.info("[LIVE_PRICE] WebSocket enabled — shared hub (pre-check not required)")
 
         self._tick_task = asyncio.create_task(self._run_fast_tick())
         self._watchdog_task = asyncio.create_task(self._run_watchdog())
 
         if use_ws:
             self.mode = "websocket_scanner"
-            self._task = asyncio.create_task(self._run_websocket_with_fallback())
+            stocks_ws_hub.add_raw_handler(self._handle_ws_payload)
+            await stocks_ws_hub.start()
+            self._hub_started = True
+            live_confirmation_engine.set_ws_status(connected=True, fallback=False)
         else:
             self.mode = "scanner_rest"
 
+        symbols = self._monitor_symbols()
+        if use_ws and symbols:
+            stocks_ws_hub.set_consumer("jump", symbols, ("T", "Q"))
+            live_confirmation_engine.set_monitor_symbols(symbols)
+
         logger.info(
-            "Institutional scanner stream: mode=%s tick=%ss monitor=%d",
-            self.mode, SCANNER_TICK_SECONDS, LIVE_MONITOR_POOL,
+            "Institutional scanner stream: mode=%s tick=%ss monitor_symbols=%d hub=%s",
+            self.mode,
+            SCANNER_TICK_SECONDS,
+            len(symbols),
+            stocks_ws_hub.status_dict(),
         )
 
     async def stop(self) -> None:
         self._running = False
         jump_engine_monitor.mark_stopped()
-        for task in (self._task, self._tick_task, self._watchdog_task):
+        if self._hub_started:
+            stocks_ws_hub.remove_raw_handler(self._handle_ws_payload)
+            stocks_ws_hub.clear_consumer("jump")
+            await stocks_ws_hub.stop()
+            self._hub_started = False
+        for task in (self._tick_task, self._watchdog_task):
             if task and not task.done():
                 task.cancel()
                 try:
@@ -96,6 +107,7 @@ class MarketStream:
             "stream_mode": self.mode,
             "last_tick_ms": round(self.last_tick_ms, 1),
             "scanner": True,
+            "stocks_ws_hub": stocks_ws_hub.status_dict(),
         }
         if extra:
             data.update(extra)
@@ -125,7 +137,7 @@ class MarketStream:
             })
 
     async def _run_watchdog(self) -> None:
-        """Self-healing — restart scanner/WS tasks if they exit unexpectedly."""
+        """Self-healing — restart scanner tick if it exits unexpectedly."""
         while self._running:
             await asyncio.sleep(30)
             if not self._running:
@@ -136,15 +148,11 @@ class MarketStream:
                 jump_engine_monitor.record_error(err)
                 logger.error("[JUMP] Scanner tick task died (%s) — auto-restarting", exc)
                 self._tick_task = asyncio.create_task(self._run_fast_tick())
-            status = get_connection_status()
-            if WEBSOCKET_ENABLED and status.websocket_available:
-                if self._task is None or self._task.done():
-                    exc = self._task.exception() if self._task else None
-                    err = f"ws_task_died:{exc!r}" if exc else "ws_task_missing"
-                    jump_engine_monitor.record_error(err)
-                    logger.error("[JUMP] WebSocket task died (%s) — auto-restarting", exc)
-                    self.mode = "websocket_scanner"
-                    self._task = asyncio.create_task(self._run_websocket_with_fallback())
+            if WEBSOCKET_ENABLED and self._hub_started and not stocks_ws_hub.is_running:
+                jump_engine_monitor.record_error("stocks_ws_hub_stopped")
+                logger.error("[JUMP] Stocks WS hub stopped — auto-restarting")
+                stocks_ws_hub.add_raw_handler(self._handle_ws_payload)
+                await stocks_ws_hub.start()
 
     async def _run_fast_tick(self) -> None:
         """Institutional scanner — full market coarse + deep top 20 every 15s."""
@@ -163,6 +171,13 @@ class MarketStream:
                     refresh_in_progress=cs.get("refresh_in_progress", False),
                     refresh_skipped=cs.get("refresh_skipped", 0),
                 )
+
+                if self._hub_started:
+                    symbols = self._monitor_symbols()
+                    stocks_ws_hub.set_consumer("jump", symbols, ("T", "Q"))
+                    live_confirmation_engine.set_monitor_symbols(symbols)
+                    ws_ok = live_price_registry.status.connected
+                    live_confirmation_engine.set_ws_status(connected=ws_ok, fallback=not ws_ok)
 
                 state = await market_scanner.run_fast_tick()
                 self.last_tick_ms = state.last_tick_ms
@@ -202,46 +217,36 @@ class MarketStream:
             elapsed = time.monotonic() - t0
             await asyncio.sleep(max(0.0, SCANNER_TICK_SECONDS - elapsed))
 
+    @staticmethod
+    def _patch_snapshot_trade(sym: str, price: float, ts_raw: object) -> None:
+        """Keep scanner snapshot lastTrade aligned with WS for Jump price resolution."""
+        raw = market_scanner._snapshot_raw
+        entry = raw.get(sym)
+        if not entry:
+            return
+        try:
+            ts_ns = int(ts_raw) if ts_raw is not None else int(time.time() * 1_000_000_000)
+        except (TypeError, ValueError):
+            ts_ns = int(time.time() * 1_000_000_000)
+        patched = dict(entry)
+        patched["lastTrade"] = {"p": price, "t": ts_ns}
+        patched["updated"] = ts_ns
+        raw[sym] = patched
+
     def _monitor_symbols(self) -> list[str]:
-        pool = market_scanner._rank_pool[:LIVE_MONITOR_POOL]
+        from services.pre_move_predictor_service import get_premove_monitor_symbols
+
+        premove = get_premove_monitor_symbols()
+        rank = list(market_scanner._rank_pool[:50])
+        pool = list(dict.fromkeys(rank + premove))
         if pool:
             return pool
         state = market_scanner.get_state()
         if state:
-            return [s.symbol for s in state.snapshots[:LIVE_MONITOR_POOL]]
+            return [s.symbol for s in state.snapshots[:72]]
         return []
 
-    async def _run_websocket_with_fallback(self) -> None:
-        backoff = 2.0
-        max_backoff = 60.0
-        while self._running:
-            try:
-                live_price_registry.note_reconnect()
-                jump_engine_monitor.record_reconnect()
-                await self._run_websocket()
-                backoff = 2.0
-            except websockets.exceptions.ConnectionClosedError as e:
-                code = getattr(e, "code", None)
-                live_price_registry.set_error(str(code or e))
-                live_price_registry.set_connected(False)
-                live_confirmation_engine.set_ws_status(
-                    connected=False, fallback=True, error=str(code or e),
-                )
-                self.mode = "scanner_rest"
-                logger.warning("[LIVE_PRICE] websocket closed code=%s — retry in %.0fs", code, backoff)
-            except Exception as e:
-                live_price_registry.set_error(str(e))
-                live_price_registry.set_connected(False)
-                live_confirmation_engine.set_ws_status(connected=False, fallback=True, error=str(e))
-                self.mode = "scanner_rest"
-                logger.warning("[LIVE_PRICE] websocket error %s — retry in %.0fs", type(e).__name__, backoff)
-            if not self._running:
-                break
-            await asyncio.sleep(backoff)
-            backoff = min(max_backoff, backoff * 1.5)
-
     async def _handle_ws_payload(self, payload: list | dict) -> None:
-        live_price_registry.note_message_received()
         items = payload if isinstance(payload, list) else [payload]
         for item in items:
             if not isinstance(item, dict):
@@ -257,6 +262,7 @@ class MarketStream:
                     live_price_registry.ingest_trade(
                         sym, price, exchange_ts_ns=item.get("t"), size=size,
                     )
+                    self._patch_snapshot_trade(sym, price, item.get("t"))
                     live_confirmation_engine.ingest_ws_trade(sym, price, size)
             elif ev == "Q":
                 bid = float(item.get("bp") or item.get("p") or 0)
@@ -265,53 +271,10 @@ class MarketStream:
                     live_price_registry.ingest_quote(
                         sym, bid, ask, exchange_ts_ns=item.get("t"),
                     )
+                    mid = round((bid + ask) / 2, 4)
+                    self._patch_snapshot_trade(sym, mid, item.get("t"))
             elif ev in ("AM", "A"):
                 price = float(item.get("c") or item.get("close") or item.get("p") or 0)
                 vol = int(item.get("v") or item.get("volume") or 0)
                 if price > 0:
                     live_confirmation_engine.ingest_ws_trade(sym, price, vol)
-
-    async def _run_websocket(self) -> None:
-        self.mode = "websocket_scanner"
-        symbols = self._monitor_symbols()
-        live_confirmation_engine.set_monitor_symbols(symbols)
-        api_key = get_polygon_api_key()
-        if not api_key:
-            raise ConnectionError("POLYGON_API_KEY not configured — set env var on Render")
-
-        async with websockets.connect(POLYGON_WS_URL, ping_interval=20) as ws:
-            await ws.send(json.dumps({"action": "auth", "params": api_key}))
-            auth_ok, auth_msg = await _wait_ws_auth(ws)
-            if not auth_ok:
-                live_price_registry.set_connected(False)
-                raise ConnectionError(f"WebSocket auth failed: {auth_msg}")
-
-            live_price_registry.set_connected(True, authenticated=True)
-            live_confirmation_engine.set_ws_status(connected=True, fallback=False)
-
-            if symbols:
-                channels: list[str] = []
-                for s in symbols:
-                    channels.extend([f"T.{s}", f"Q.{s}"])
-                await ws.send(json.dumps({"action": "subscribe", "params": ",".join(channels)}))
-                live_price_registry.set_subscribed(symbols)
-                logger.info("WS subscribed T+Q for %d symbols (max %d)", len(symbols), LIVE_MONITOR_POOL)
-
-            async for message in ws:
-                if not self._running:
-                    break
-                try:
-                    data = json.loads(message)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(data, list) and data and data[0].get("ev") == "status":
-                    status_msg = data[0].get("message", "")
-                    if "1008" in status_msg or "policy" in status_msg.lower():
-                        live_price_registry.set_connected(False)
-                        live_price_registry.set_error(status_msg)
-                        live_confirmation_engine.set_ws_status(
-                            connected=False, fallback=True, error=status_msg,
-                        )
-                        raise ConnectionError(f"WebSocket policy violation: {status_msg}")
-                    continue
-                await self._handle_ws_payload(data)
