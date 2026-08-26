@@ -6,12 +6,21 @@ import logging
 
 from config import SCANNER_TICK_SECONDS
 from models.opportunity_now import OpportunityNowResponse, OpportunityNowSignal
+from models.pre_move import PreMoveSignal
 from models.premarket_opportunity import PremarketOpportunitySignal, PremarketScanResult
 from models.stock import StockSnapshot
 from services.extended_hours_gap_detector import (
     ExtendedGapDetection,
     extended_gap_registry,
     sync_extended_gap_detector,
+)
+from services.display_buy_pressure_filter import (
+    DISPLAY_JUMP_ALERT,
+    DISPLAY_STRONG_BUY_WATCH,
+    apply_display_verdict,
+    evaluate_extended_gap_display,
+    evaluate_jump_alert_display,
+    evaluate_premove_display,
 )
 from services.jump_alert_registry import jump_alert_registry
 from services.jump_engine_monitor import jump_engine_monitor
@@ -76,6 +85,101 @@ def _jump_alert_to_signal(alert, *, session: str) -> OpportunityNowSignal:
         jump_alert_created=alert.jump_alert_created,
         stage_lifecycle=stage,
     )
+
+
+def _premove_to_opportunity_signal(sig: PreMoveSignal, *, session: str) -> OpportunityNowSignal:
+    lifecycle = sig.stage_progression.stage_lifecycle or sig.lifecycle or sig.status
+    status_map = {
+        "EARLY_ENTRY": "NOW",
+        "HIGH_CONVICTION_EARLY": "NOW",
+        "PRE_BREAKOUT": "READY",
+        "EARLY_WATCH": "WATCH",
+    }
+    status = status_map.get(sig.status, "WATCH")
+    return OpportunityNowSignal(
+        symbol=sig.symbol,
+        name=sig.name or sig.symbol,
+        price=round(sig.current_price, 4),
+        change_percent=round(sig.change_percent, 2),
+        score=float(sig.pre_move_score),
+        status=status,  # type: ignore[arg-type]
+        status_ar=STATUS_AR.get(status, status),
+        opportunity_type=sig.status,
+        appeared_at=sig.first_detected_at or sig.data_timestamp,
+        expires_at="",
+        entry_zone=round((sig.entry_low + sig.entry_high) / 2, 4),
+        entry_zone_low=sig.entry_low,
+        entry_zone_high=sig.entry_high,
+        stop_loss=sig.stop_loss,
+        target_1=sig.tp1,
+        target_2=sig.tp2,
+        risk_level=sig.risk_level,
+        risk_reward_ratio=sig.risk_reward,
+        confirmed_factors=len(sig.early_activity.confluence_factors),
+        total_factors=17,
+        consecutive_confirmations=0,
+        reasons_ar=[sig.reason] if sig.reason else sig.early_activity.confluence_factors[:4],
+        cancellation_reasons_ar=[],
+        late_entry_warning=sig.late_move.is_too_late,
+        data_timestamp=sig.data_timestamp,
+        data_age_seconds=sig.data_age_seconds,
+        session=session,
+        stage_lifecycle=lifecycle,
+        rvol=sig.volume.rvol,
+        volume_acceleration=sig.volume.volume_acceleration_1m,
+    )
+
+
+def _collect_home_display_signals(session: str) -> list[OpportunityNowSignal]:
+    """Strong real buying only — CRE/AIXI/WVVIP/BTCT-style confluence, not score-only."""
+    from services.pre_move_predictor_service import get_last_pre_move_scan
+
+    seen: set[str] = set()
+    out: list[OpportunityNowSignal] = []
+
+    for alert_sig in _collect_jump_alerts(session):
+        verdict = evaluate_jump_alert_display(alert_sig)
+        if verdict.show:
+            enriched = apply_display_verdict(alert_sig, verdict)
+            sym = enriched.symbol.upper()
+            if sym not in seen:
+                out.append(enriched)
+                seen.add(sym)
+
+    scan = get_last_pre_move_scan()
+    if scan:
+        for pm in scan.signals:
+            base = _premove_to_opportunity_signal(pm, session=session)
+            verdict = evaluate_premove_display(pm)
+            if not verdict.show:
+                continue
+            enriched = apply_display_verdict(base, verdict)
+            sym = enriched.symbol.upper()
+            if sym in seen:
+                continue
+            out.append(enriched)
+            seen.add(sym)
+
+    ext = _pick_extended_alert()
+    if ext:
+        verdict = evaluate_extended_gap_display(ext)
+        if verdict.show:
+            enriched = apply_display_verdict(ext, verdict)
+            sym = enriched.symbol.upper()
+            if sym not in seen:
+                out.append(enriched)
+                seen.add(sym)
+
+    out.sort(
+        key=lambda s: (
+            s.display_type == DISPLAY_JUMP_ALERT,
+            s.buy_pressure_score,
+            s.confluence_count,
+            s.score,
+        ),
+        reverse=True,
+    )
+    return out
 
 
 def _collect_jump_alerts(session: str) -> list[OpportunityNowSignal]:
@@ -361,6 +465,7 @@ def get_opportunity_now() -> OpportunityNowResponse:
         sync_engine_from_scanner()
 
         jump_alerts = _collect_jump_alerts(session)
+        display_signals = _collect_home_display_signals(session)
         engine_snap = jump_engine_monitor.get_snapshot()
         jump_engine_status = engine_snap.jump_engine_status
 
@@ -396,7 +501,7 @@ def get_opportunity_now() -> OpportunityNowResponse:
             reverse=True,
         )
 
-        if session == "PRE_MARKET" and premarket_scan:
+        if session == "PRE_MARKET" and premarket_scan and not display_signals:
             if premarket_scan.top_opportunity:
                 top = _premarket_to_opportunity_signal(premarket_scan.top_opportunity)
                 resp_status = "NOW"
@@ -408,18 +513,23 @@ def get_opportunity_now() -> OpportunityNowResponse:
             else:
                 top = None
                 resp_status = "NONE"
-                none_message = "لا توجد فرصة دخول فعلية الآن"
+                none_message = "لا يوجد شراء قوي فعلي الآن"
         else:
-            top = _pick_top_signal(signals, best, market_open=market_open)
-            if not top and jump_alerts:
-                top = jump_alerts[0]
+            top = display_signals[0] if display_signals else None
             if top:
                 resp_status = top.status if top.status != "NONE" else "NONE"
             else:
                 resp_status = "NONE"
-            none_message = "لا توجد فرصة مكتملة الآن"
+            none_message = (
+                "لا يوجد شراء قوي فعلي الآن"
+                if not display_signals
+                else "لا توجد فرصة مكتملة الآن"
+            )
 
-        extended_alert = _pick_extended_alert()
+        extended_alert = next(
+            (ds for ds in display_signals if ds.extended_gap_pct > 0 and ds.detection_stage),
+            None,
+        )
         live_source = (
             "websocket"
             if live_confirmation_engine.ws_connected and not live_confirmation_engine.ws_fallback
@@ -442,6 +552,7 @@ def get_opportunity_now() -> OpportunityNowResponse:
             premarket_scan=premarket_scan,
             jump_alerts=jump_alerts,
             jump_engine_status=jump_engine_status,
+            display_signals=display_signals,
         )
     except Exception as exc:
         logger.warning("Opportunity now unavailable: %s", type(exc).__name__)

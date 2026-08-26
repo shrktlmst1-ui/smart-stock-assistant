@@ -55,7 +55,7 @@ class JumpSection extends StatelessWidget {
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 16),
             child: Text(
-              'لا توجد قفزات مؤكدة الآن',
+              'لا يوجد شراء قوي فعلي الآن',
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.textSecondary),
             ),
@@ -63,7 +63,7 @@ class JumpSection extends StatelessWidget {
         else
           ...jumps.map((signal) {
             final onTap = onOpenSymbol == null ? null : () => onOpenSymbol!(signal.symbol);
-            if (signal.isRealNewsJump) {
+            if (signal.isRealNewsJump || (signal.isJumpAlertDisplay && signal.extendedGapPct > 0)) {
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: ExtendedAlertHomeCard(alert: signal, onTap: onTap),

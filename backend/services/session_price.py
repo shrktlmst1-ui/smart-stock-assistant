@@ -15,7 +15,9 @@ from services.market_session import (
     REGULAR_CLOSE,
     REGULAR_OPEN,
     MarketSession,
+    get_regular_close_et,
     get_us_market_session,
+    log_session_transition,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,7 +151,8 @@ def _is_trade_in_extended_session(trade_ns: object, session: MarketSession) -> b
     if session == "PRE_MARKET":
         return PRE_MARKET_OPEN <= t < REGULAR_OPEN
     if session == "AFTER_HOURS":
-        return REGULAR_CLOSE <= t < AFTER_HOURS_CLOSE
+        reg_close = get_regular_close_et(trade_et)
+        return reg_close <= t < AFTER_HOURS_CLOSE
     return False
 
 
@@ -191,7 +194,7 @@ def _is_trade_in_regular_session(trade_ns: object) -> bool:
     if trade_et.date() != now_et.date():
         return False
     t = trade_et.time()
-    return REGULAR_OPEN <= t < REGULAR_CLOSE
+    return REGULAR_OPEN <= t < get_regular_close_et(now_et)
 
 
 def _is_min_bar_in_regular_session(min_bar: dict) -> bool:
@@ -200,7 +203,7 @@ def _is_min_bar_in_regular_session(min_bar: dict) -> bool:
         return False
     now_et = datetime.now(ET)
     t = now_et.time()
-    return REGULAR_OPEN <= t < REGULAR_CLOSE
+    return REGULAR_OPEN <= t < get_regular_close_et(now_et)
 
 
 def _quote_mid(nbbo: dict | None) -> tuple[float, datetime | None]:
@@ -667,11 +670,33 @@ def invalidate_price_caches(
     )
 
 
+def _feed_diagnostics() -> tuple[bool, int, float | None, float | None]:
+    try:
+        from services.live_price_registry import live_price_registry
+
+        st = live_price_registry.status
+        now = datetime.now(timezone.utc)
+        trade_age = (now - st.last_trade_at).total_seconds() if st.last_trade_at else None
+        quote_age = (now - st.last_quote_at).total_seconds() if st.last_quote_at else None
+        return st.connected, len(st.subscribed_symbols), trade_age, quote_age
+    except Exception:
+        return False, 0, None, None
+
+
 def ensure_session_cache_valid() -> MarketSession:
     """Invalidate stale session prices when PREMARKET→REGULAR etc."""
     global _last_known_session
     current = get_us_market_session()
     if _last_known_session is not None and _last_known_session != current:
+        ws_ok, subs, trade_age, quote_age = _feed_diagnostics()
+        log_session_transition(
+            old_session=_last_known_session,
+            new_session=current,
+            ws_connected=ws_ok,
+            subscribed_symbols=subs,
+            last_trade_age=trade_age,
+            last_quote_age=quote_age,
+        )
         invalidate_price_caches(previous=_last_known_session, current=current)
     _last_known_session = current
     return current

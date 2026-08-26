@@ -56,7 +56,14 @@ from database.pre_move_db import upsert_prediction
 from models.pre_move import PreMoveLifecycleEvent, PreMoveScanResult, PreMoveScanStats, PreMoveSignal
 from models.stock import NewsItem
 from services.extended_hours_gap_detector import _safe_float, is_eligible_extended_gap_symbol
-from services.market_session import ET, get_us_market_session
+from services.market_session import (
+    ET,
+    PRE_MARKET_OPEN,
+    REGULAR_OPEN,
+    get_regular_close_et,
+    get_us_market_session,
+    trading_session_date_et,
+)
 from services.pre_move_stage_store import clear_stale_states, get_or_create_state, list_active_stage_symbols, update_stage_state
 from services.news_service import fetch_stock_news
 from services.scanner_filters import parse_snapshot_item
@@ -106,10 +113,26 @@ async def _fetch_bars(client, symbol: str, session: str) -> pd.DataFrame:
     cached = _bar_cache.get(key)
     if cached and time.monotonic() - cached[0] < 60:
         return cached[1]
-    if session == "PRE_MARKET":
-        df = await client.get_premarket_minute_bars(symbol)
-    else:
-        df = await client.get_premarket_minute_bars(symbol)
+    df = await client.get_premarket_minute_bars(symbol)
+    if not df.empty and "timestamp" in df.columns:
+        session_date = datetime.now(ET).date()
+        et = df["timestamp"].dt.tz_convert(ET)
+        if session == "PRE_MARKET":
+            mask = (
+                (et.dt.date == session_date)
+                & (et.dt.time >= PRE_MARKET_OPEN)
+                & (et.dt.time < REGULAR_OPEN)
+            )
+        elif session == "REGULAR":
+            reg_close = get_regular_close_et()
+            mask = (
+                (et.dt.date == session_date)
+                & (et.dt.time >= REGULAR_OPEN)
+                & (et.dt.time < reg_close)
+            )
+        else:
+            mask = et.dt.date == session_date
+        df = df.loc[mask].copy()
     _bar_cache[key] = (time.monotonic(), df)
     if len(_bar_cache) > 200:
         oldest = sorted(_bar_cache.items(), key=lambda x: x[1][0])[:50]
@@ -395,7 +418,7 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
         bars, early, base_price=base_price, price=price, had_early_watch=False,
     )
 
-    session_date = now_iso[:10]
+    session_date = trading_session_date_et()
     stage_state = get_or_create_state(sym, session_date)
     prior_stage = stage_state.current_stage
     prior_snaps = stage_state.history()

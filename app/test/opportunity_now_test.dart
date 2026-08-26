@@ -184,7 +184,165 @@ void main() {
       expect(resp.hasExtendedAlert, isTrue);
     });
 
-    test('confirmedJumps returns news + watch max 3', () {
+    test('confirmedJumps uses display_signals when present', () {
+      final resp = OpportunityNowResponse.fromJson({
+        'status': 'WATCH',
+        'market_status': 'REGULAR',
+        'market_open': true,
+        'scan_interval_seconds': 15,
+        'message': '',
+        'ws_connected': true,
+        'display_signals': [
+          {
+            'symbol': 'CRE',
+            'name': 'CRE',
+            'price': 1.15,
+            'change_percent': 10,
+            'score': 68,
+            'status': 'WATCH',
+            'status_ar': 'ضغط شراء قوي',
+            'display_type': 'STRONG_BUY_WATCH',
+            'buy_pressure_score': 12.5,
+            'confluence_count': 6,
+            'confluence_factors': ['vol_accel', 'rvol'],
+            'appeared_at': '2026-01-01T00:00:00Z',
+            'expires_at': '',
+            'entry_zone': 1.15,
+            'entry_zone_low': 1.1,
+            'entry_zone_high': 1.2,
+            'stop_loss': 1.05,
+            'target_1': 1.25,
+            'target_2': 1.35,
+            'risk_level': 'متوسط',
+            'confirmed_factors': 6,
+            'total_factors': 17,
+            'reasons_ar': ['شراء قوي'],
+          },
+        ],
+        'signals': [
+          {
+            'symbol': 'WEAK',
+            'name': 'Weak',
+            'price': 2.0,
+            'change_percent': 1,
+            'score': 90,
+            'status': 'WATCH',
+            'status_ar': 'مراقبة',
+            'appeared_at': '2026-01-01T00:00:00Z',
+            'expires_at': '',
+            'entry_zone': 2.0,
+            'stop_loss': 1.9,
+            'target_1': 2.1,
+            'target_2': 2.2,
+            'risk_level': 'مرتفع',
+            'reasons_ar': [],
+          },
+        ],
+      });
+
+      final jumps = resp.confirmedJumps(limit: 3);
+      expect(jumps.length, 1);
+      expect(jumps.first.symbol, 'CRE');
+      expect(jumps.first.isStrongBuyWatch, isTrue);
+    });
+
+    test('confirmedJumps returns display_signals max 3', () {
+      final resp = OpportunityNowResponse.fromJson({
+        'status': 'WATCH',
+        'market_status': 'PRE_MARKET',
+        'market_open': false,
+        'scan_interval_seconds': 15,
+        'message': '',
+        'ws_connected': true,
+        'display_signals': [
+          {
+            'symbol': 'SUGP',
+            'name': 'Su Group',
+            'price': 4.28,
+            'change_percent': 54.23,
+            'score': 88,
+            'status': 'NOW',
+            'status_ar': 'قفزة مؤكدة',
+            'display_type': 'JUMP_ALERT',
+            'buy_pressure_score': 20,
+            'confluence_count': 6,
+            'appeared_at': '2026-01-01T00:00:00Z',
+            'expires_at': '',
+            'entry_zone': 2.8,
+            'stop_loss': 2.7,
+            'target_1': 4.4,
+            'target_2': 4.5,
+            'risk_level': 'مرتفع',
+            'session': 'PRE_MARKET',
+            'extended_gap_pct': 54.23,
+            'detection_stage': 'EXPLOSIVE',
+            'previous_close': 2.775,
+            'extended_price': 4.28,
+            'extended_volume': 120000,
+            'catalyst_title_ar': 'امتثال ناسdaq',
+          },
+          {
+            'symbol': 'BTCT',
+            'name': 'BTCT',
+            'price': 3.5,
+            'change_percent': 8,
+            'score': 72,
+            'status': 'WATCH',
+            'status_ar': 'ضغط شراء قوي',
+            'display_type': 'STRONG_BUY_WATCH',
+            'buy_pressure_score': 15,
+            'confluence_count': 5,
+            'appeared_at': '2026-01-01T00:00:00Z',
+            'expires_at': '',
+            'entry_zone': 3.5,
+            'entry_zone_low': 3.4,
+            'entry_zone_high': 3.6,
+            'stop_loss': 3.4,
+            'target_1': 3.6,
+            'target_2': 3.7,
+            'risk_level': 'متوسط',
+            'confirmed_factors': 8,
+            'total_factors': 17,
+            'reasons_ar': ['حجم متسارع'],
+          },
+          {
+            'symbol': 'CISS',
+            'name': 'CISS',
+            'price': 2.1,
+            'change_percent': 4,
+            'score': 68,
+            'status': 'WATCH',
+            'status_ar': 'ضغط شراء قوي',
+            'display_type': 'STRONG_BUY_WATCH',
+            'buy_pressure_score': 10,
+            'confluence_count': 5,
+            'appeared_at': '2026-01-01T00:00:00Z',
+            'expires_at': '',
+            'entry_zone': 2.1,
+            'entry_zone_low': 2.0,
+            'entry_zone_high': 2.2,
+            'stop_loss': 1.9,
+            'target_1': 2.3,
+            'target_2': 2.4,
+            'risk_level': 'متوسط',
+            'confirmed_factors': 6,
+            'total_factors': 17,
+            'reasons_ar': ['ضغط شرائي'],
+          },
+        ],
+        'signals': [],
+      });
+
+      final jumps = resp.confirmedJumps(limit: 3);
+      expect(jumps.length, 3);
+      expect(jumps[0].symbol, 'SUGP');
+      expect(jumps[0].isJumpAlertDisplay, isTrue);
+      expect(jumps[1].symbol, 'BTCT');
+      expect(jumps[1].isStrongBuyWatch, isTrue);
+      expect(jumps[2].symbol, 'CISS');
+    });
+
+    test('confirmedJumps empty without display_type on legacy data', () {
       final resp = OpportunityNowResponse.fromJson({
         'status': 'WATCH',
         'market_status': 'PRE_MARKET',
@@ -262,13 +420,7 @@ void main() {
         ],
       });
 
-      final jumps = resp.confirmedJumps(limit: 3);
-      expect(jumps.length, 3);
-      expect(jumps[0].symbol, 'SUGP');
-      expect(jumps[0].isRealNewsJump, isTrue);
-      expect(jumps[1].symbol, 'BTCT');
-      expect(jumps[1].isRealWatchJump, isTrue);
-      expect(jumps[2].symbol, 'CISS');
+      expect(resp.confirmedJumps(limit: 3), isEmpty);
     });
 
     test('confirmedJumps empty when no real jumps', () {

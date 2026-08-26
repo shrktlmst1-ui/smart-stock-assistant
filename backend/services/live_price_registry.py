@@ -135,6 +135,15 @@ class LivePriceRegistry:
             return
         session = get_us_market_session()
         if session not in _ACTIVE_LIVE_SESSIONS:
+            mono = time.monotonic()
+            if mono - self._last_trade_log_mono >= FEED_LOG_INTERVAL_SEC:
+                self._last_trade_log_mono = mono
+                logger.info(
+                    "[LIVE_PRICE] out_of_session_trade sym=%s session=%s price=%.4f (diagnostic only)",
+                    sym,
+                    session,
+                    price,
+                )
             return
         now = datetime.now(timezone.utc)
         ex_ts = _ns_to_datetime(exchange_ts_ns) if exchange_ts_ns else now
@@ -173,6 +182,11 @@ class LivePriceRegistry:
             return
         session = get_us_market_session()
         if session not in _ACTIVE_LIVE_SESSIONS:
+            logger.debug(
+                "[LIVE_PRICE] out_of_session_quote sym=%s session=%s (diagnostic only)",
+                sym,
+                session,
+            )
             return
         mid = round((bid + ask) / 2, 4)
         now = datetime.now(timezone.utc)

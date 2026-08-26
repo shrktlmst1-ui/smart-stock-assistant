@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from services.market_session import get_us_market_session, is_regular_session
+from services.market_session import get_us_market_session, is_jump_engine_armed_session, is_regular_session
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +22,9 @@ def _resolve_jump_engine_status(
     last_ws_message_time: str,
     session: str,
 ) -> str:
-    """ARMED when engine ticks; NO_LIVE_DATA when no fresh live feed in an active session."""
-    if session == "CLOSED":
-        return "ARMED"
+    """ARMED only in PRE/REG/AH with live feed; CLOSED → NO_LIVE_DATA."""
+    if not is_jump_engine_armed_session(session):  # type: ignore[arg-type]
+        return "NO_LIVE_DATA"
     if websocket_connected:
         return "ARMED"
     if last_ws_message_time:

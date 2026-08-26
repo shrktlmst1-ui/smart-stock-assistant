@@ -52,6 +52,12 @@ class OpportunityNowSignal {
   final bool jumpQualified;
   final bool jumpAlertCreated;
   final String stageLifecycle;
+  final String displayType;
+  final double buyPressureScore;
+  final int confluenceCount;
+  final List<String> confluenceFactors;
+  final double rvol;
+  final double volumeAcceleration;
 
   const OpportunityNowSignal({
     required this.symbol,
@@ -101,6 +107,12 @@ class OpportunityNowSignal {
     this.jumpQualified = false,
     this.jumpAlertCreated = false,
     this.stageLifecycle = '',
+    this.displayType = '',
+    this.buyPressureScore = 0,
+    this.confluenceCount = 0,
+    this.confluenceFactors = const [],
+    this.rvol = 0,
+    this.volumeAcceleration = 0,
   });
 
   factory OpportunityNowSignal.fromJson(Map<String, dynamic> json) {
@@ -154,6 +166,19 @@ class OpportunityNowSignal {
       jumpQualified: readJsonBool(json, ['jump_qualified', 'jumpQualified']),
       jumpAlertCreated: readJsonBool(json, ['jump_alert_created', 'jumpAlertCreated']),
       stageLifecycle: readJsonString(json, ['stage_lifecycle', 'stageLifecycle']),
+      displayType: readJsonString(json, ['display_type', 'displayType']),
+      buyPressureScore: (json['buy_pressure_score'] as num?)?.toDouble() ??
+          (json['buyPressureScore'] as num?)?.toDouble() ??
+          0,
+      confluenceCount: readJsonInt(json, ['confluence_count', 'confluenceCount']),
+      confluenceFactors: (json['confluence_factors'] as List? ?? json['confluenceFactors'] as List?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const [],
+      rvol: (json['rvol'] as num?)?.toDouble() ?? 0,
+      volumeAcceleration: (json['volume_acceleration'] as num?)?.toDouble() ??
+          (json['volumeAcceleration'] as num?)?.toDouble() ??
+          0,
     );
   }
 
@@ -187,6 +212,13 @@ class OpportunityNowSignal {
 
   bool get isCancelled => status == 'CANCELLED';
 
+  bool get isQualifiedJumpAlert =>
+      jumpAlertId.isNotEmpty &&
+      jumpQualified &&
+      jumpAlertCreated &&
+      price > 0 &&
+      changePercent > 0;
+
   bool get isRealNewsJump =>
       isValidExtendedAlert && detectionStage.isNotEmpty && extendedGapPct > 0;
 
@@ -198,12 +230,12 @@ class OpportunityNowSignal {
       !isExtendedGap &&
       (isWatch || isReady || isOpportunityNow);
 
-  bool get isQualifiedJumpAlert =>
-      jumpAlertId.isNotEmpty &&
-      jumpQualified &&
-      jumpAlertCreated &&
-      price > 0 &&
-      changePercent > 0;
+  bool get isStrongBuyWatch => displayType == 'STRONG_BUY_WATCH';
+
+  bool get isJumpAlertDisplay => displayType == 'JUMP_ALERT';
+
+  bool get isDisplayableBuyPressure =>
+      isStrongBuyWatch || isJumpAlertDisplay || isQualifiedJumpAlert;
 
   String get sessionLabelAr {
     switch (session) {
@@ -231,6 +263,7 @@ class OpportunityNowResponse {
   final OpportunityNowSignal? topSignal;
   final OpportunityNowSignal? extendedAlert;
   final List<OpportunityNowSignal> jumpAlerts;
+  final List<OpportunityNowSignal> displaySignals;
   final String jumpEngineStatus;
 
   const OpportunityNowResponse({
@@ -247,6 +280,7 @@ class OpportunityNowResponse {
     required this.topSignal,
     this.extendedAlert,
     this.jumpAlerts = const [],
+    this.displaySignals = const [],
     this.jumpEngineStatus = 'ARMED',
   });
 
@@ -279,6 +313,14 @@ class OpportunityNowResponse {
             .toList()
         : <OpportunityNowSignal>[];
 
+    final rawDisplay = json['display_signals'] ?? json['displaySignals'];
+    final displaySignals = rawDisplay is List
+        ? rawDisplay
+            .map((e) => OpportunityNowSignal.fromJson(e as Map<String, dynamic>))
+            .where((s) => s.isDisplayableBuyPressure)
+            .toList()
+        : <OpportunityNowSignal>[];
+
     final status = readJsonString(json, ['status'], defaultValue: 'NONE');
     final statusAr = readJsonString(json, ['status_ar', 'statusAr']);
 
@@ -300,6 +342,7 @@ class OpportunityNowResponse {
       topSignal: top,
       extendedAlert: extended,
       jumpAlerts: jumpAlerts,
+      displaySignals: displaySignals,
       jumpEngineStatus: readJsonString(
         json,
         ['jump_engine_status', 'jumpEngineStatus'],
@@ -320,46 +363,34 @@ class OpportunityNowResponse {
     return null;
   }
 
-  /// Old correct Jump section: news + watch + PreMove qualified jumps, max [limit] items.
+  /// Strong real buying only — STRONG_BUY_WATCH + JUMP_ALERT from backend filter.
   List<OpportunityNowSignal> confirmedJumps({int limit = 3}) {
+    if (displaySignals.isNotEmpty) {
+      return displaySignals.take(limit).toList();
+    }
+
     final out = <OpportunityNowSignal>[];
     final seen = <String>{};
 
     for (final ja in jumpAlerts) {
-      if (!ja.isQualifiedJumpAlert) continue;
+      if (!ja.isDisplayableBuyPressure) continue;
       final key = ja.symbol.toUpperCase();
       if (seen.contains(key)) continue;
       out.add(ja);
       seen.add(key);
     }
 
-    final news = extendedAlert;
-    if (news != null && news.isRealNewsJump) {
-      out.add(news);
-      seen.add(news.symbol.toUpperCase());
-    }
-
-    final watchPool = <OpportunityNowSignal>[];
-    void consider(OpportunityNowSignal? signal) {
-      if (signal == null || !signal.isRealWatchJump) return;
-      final key = signal.symbol.toUpperCase();
-      if (seen.contains(key)) return;
-      if (watchPool.any((s) => s.symbol.toUpperCase() == key)) return;
-      watchPool.add(signal);
-    }
-
-    consider(displayTop);
     for (final s in signals) {
-      consider(s);
-    }
-    watchPool.sort((a, b) => b.score.compareTo(a.score));
-
-    for (final w in watchPool) {
+      if (!s.isDisplayableBuyPressure) continue;
+      final key = s.symbol.toUpperCase();
+      if (seen.contains(key)) continue;
+      out.add(s);
+      seen.add(key);
       if (out.length >= limit) break;
-      out.add(w);
-      seen.add(w.symbol.toUpperCase());
     }
-    return out;
+
+    out.sort((a, b) => b.buyPressureScore.compareTo(a.buyPressureScore));
+    return out.take(limit).toList();
   }
 
   bool get hasConfirmedJumps => confirmedJumps().isNotEmpty;

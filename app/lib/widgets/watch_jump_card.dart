@@ -19,6 +19,11 @@ class WatchJumpHomeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final changePrefix = signal.changePercent >= 0 ? '+' : '';
+    final isJump = signal.isJumpAlertDisplay || signal.isQualifiedJumpAlert;
+    final title = isJump ? 'قفزة مؤكدة' : 'ضغط شراء قوي';
+    final subtitle = isJump
+        ? 'JUMP_ALERT — حركة صاعدة مؤكدة'
+        : 'STRONG_BUY_WATCH — شراء قوي قبل الانفجار';
 
     return Card(
       color: AppTheme.surface,
@@ -41,9 +46,9 @@ class WatchJumpHomeCard extends StatelessWidget {
                     child: const Icon(Icons.visibility_outlined, color: AppTheme.primary, size: 26),
                   ),
                   const SizedBox(width: 12),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'قفزة مراقبة',
+                      title,
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
@@ -74,19 +79,48 @@ class WatchJumpHomeCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 10),
-              const Text(
-                'تم رصد القفزة، لكن الدخول الآن مطاردة، لا تدخل حتى يحدث تراجع وتأكيد جديد',
+              Text(
+                subtitle,
                 style: TextStyle(
-                  color: Color(0xFFD29922),
+                  color: isJump ? AppTheme.success : const Color(0xFFD29922),
                   fontWeight: FontWeight.w600,
                   fontSize: 13,
                 ),
               ),
-              const SizedBox(height: 10),
+              if (signal.confluenceCount > 0) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Confluence: ${signal.confluenceCount} — ${signal.confluenceFactors.take(4).join(', ')}',
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                ),
+              ],
+              if (!isJump) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  'ضغط شراء حقيقي — انتظر تأكيد القفزة',
+                  style: TextStyle(
+                    color: Color(0xFFD29922),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
               Wrap(
                 spacing: 8,
                 runSpacing: 6,
                 children: [
+                  if (signal.buyPressureScore > 0)
+                    _Chip(
+                      label: 'Buy ${signal.buyPressureScore.toStringAsFixed(0)}',
+                      color: AppTheme.primary,
+                    ),
+                  if (signal.rvol > 0)
+                    _Chip(label: 'RVOL ${signal.rvol.toStringAsFixed(1)}x', color: AppTheme.success),
+                  if (signal.volumeAcceleration > 0)
+                    _Chip(
+                      label: 'VolAcc ${signal.volumeAcceleration.toStringAsFixed(2)}',
+                      color: AppTheme.success,
+                    ),
                   _Chip(label: 'Score ${signal.score.toStringAsFixed(0)}', color: AppTheme.primary),
                   _Chip(
                     label: '${signal.confirmedFactors}/${signal.totalFactors} Factors',

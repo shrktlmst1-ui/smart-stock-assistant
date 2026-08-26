@@ -65,6 +65,13 @@ class OpportunityNowSignal(BaseModel):
     jump_qualified: bool = False
     jump_alert_created: bool = False
     stage_lifecycle: str = ""
+    # Home display — strong real buying pressure filter (display-only)
+    display_type: str = ""
+    buy_pressure_score: float = 0.0
+    confluence_count: int = 0
+    confluence_factors: list[str] = Field(default_factory=list)
+    rvol: float = 0.0
+    volume_acceleration: float = 0.0
 
 
 class OpportunityNowResponse(BaseModel):
@@ -83,3 +90,4 @@ class OpportunityNowResponse(BaseModel):
     premarket_scan: PremarketScanResult | None = None
     jump_alerts: list[OpportunityNowSignal] = Field(default_factory=list)
     jump_engine_status: str = "ARMED"
+    display_signals: list[OpportunityNowSignal] = Field(default_factory=list)

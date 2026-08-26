@@ -114,13 +114,18 @@ def test_no_live_data_when_ws_disconnected_in_regular():
     assert status == "NO_LIVE_DATA"
 
 
-def test_armed_when_ws_connected_any_session():
-    for session in ("PRE_MARKET", "REGULAR", "AFTER_HOURS", "CLOSED"):
+def test_armed_when_ws_connected_active_sessions_only():
+    for session in ("PRE_MARKET", "REGULAR", "AFTER_HOURS"):
         assert _resolve_jump_engine_status(
             websocket_connected=True,
             last_ws_message_time="",
             session=session,
         ) == "ARMED"
+    assert _resolve_jump_engine_status(
+        websocket_connected=True,
+        last_ws_message_time="",
+        session="CLOSED",
+    ) == "NO_LIVE_DATA"
 
 
 def test_extended_registry_survives_regular_transition():
