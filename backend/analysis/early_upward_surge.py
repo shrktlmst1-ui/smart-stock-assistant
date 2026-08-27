@@ -247,6 +247,8 @@ def evaluate_fast_upward_jump(
     lifecycle: str = "",
     early_watch_locked: bool = False,
     for_jump_alert: bool = False,
+    persistence_minutes: int = 0,
+    movement_start_price: float = 0.0,
 ) -> FastUpwardVerdict:
     """
     Parallel FAST_UPWARD_JUMP_PATH — multi-factor real buying, not absolute volume.
@@ -262,9 +264,17 @@ def evaluate_fast_upward_jump(
         confluence, factors = _count_fast_confluence(
             snap, acc_1m=0, acc_3m=0, soft_rvol=False, bars=bars,
         )
+        jump = real_price_jump_from_snapshot(
+            snap,
+            bars=bars,
+            movement_start_price=movement_start_price,
+            persistence_minutes=persistence_minutes,
+        )
         verdict.qualified = True
         verdict.fast_upward_path = True
-        verdict.display_type = DISPLAY_JUMP_ALERT if for_jump_alert else DISPLAY_STRONG_BUY_WATCH
+        verdict.display_type = (
+            DISPLAY_JUMP_ALERT if jump.confirmed and for_jump_alert else DISPLAY_STRONG_BUY_WATCH
+        )
         verdict.accept_reason = "fast_watch_locked_persist"
         verdict.confluence_count = max(confluence, 1)
         verdict.confluence_factors = factors or ["locked_watch"]
@@ -343,9 +353,18 @@ def evaluate_fast_upward_jump(
         verdict.reject_reason = "single_tick_spike"
         return verdict
 
+    jump = real_price_jump_from_snapshot(
+        snap,
+        bars=bars,
+        reacceleration=reaccel,
+        movement_start_price=movement_start_price,
+        persistence_minutes=persistence_minutes,
+    )
     verdict.qualified = True
     verdict.fast_upward_path = True
-    if for_jump_alert or lifecycle in ("EARLY_ENTRY", "BREAKOUT_CONFIRMED"):
+    if jump.confirmed and (
+        for_jump_alert or lifecycle in ("EARLY_ENTRY", "BREAKOUT_CONFIRMED")
+    ):
         verdict.display_type = DISPLAY_JUMP_ALERT
         verdict.accept_reason = "fast_upward_jump_alert"
     else:
@@ -381,6 +400,181 @@ def fast_filter_surge_rank(change_percent: float, rvol: float) -> float:
     """Rank early setups: high RVOL, penalize extended session move."""
     extension_penalty = max(0.0, change_percent - 12.0) * 3.0
     return rvol * 2.5 + min(change_percent, 12.0) * 0.5 - extension_penalty
+
+
+@dataclass
+class RealPriceJumpVerdict:
+    confirmed: bool = False
+    reject_reason: str = ""
+    evidence_factors: list[str] = field(default_factory=list)
+
+
+def _higher_high_or_breakout(
+    *,
+    current_price: float,
+    micro_higher_lows: bool,
+    trigger_price: float,
+    breakout_pressure: float,
+    resistance_distance_pct: float,
+    bars: pd.DataFrame | None,
+) -> bool:
+    if micro_higher_lows:
+        return True
+    if trigger_price > 0 and current_price >= trigger_price * 0.992:
+        return True
+    if breakout_pressure >= 42.0:
+        return True
+    if resistance_distance_pct <= STAGE_BREAKOUT_NEAR_PCT * 1.5:
+        return True
+    if bars is not None and len(bars) >= 2:
+        highs = bars["high"].astype(float)
+        if highs.iloc[-1] > highs.iloc[-2]:
+            return True
+    return False
+
+
+def _multi_tick_upward_persistence(
+    *,
+    bars: pd.DataFrame | None,
+    persistence_minutes: int,
+    micro_higher_lows: bool,
+    price_volume_response: float,
+    change_pct: float,
+    reacceleration: bool,
+) -> bool:
+    if reacceleration:
+        return True
+    if persistence_minutes >= 2:
+        return True
+    if bars is not None and _price_momentum_persisted(bars):
+        return True
+    if (
+        micro_higher_lows
+        and price_volume_response >= 0.35
+        and change_pct >= STAGE_EE_MIN_SESSION_CHANGE_PCT
+    ):
+        return True
+    return False
+
+
+def evaluate_real_price_jump(
+    *,
+    current_price: float,
+    change_pct: float,
+    price_volume_response: float = 0.0,
+    micro_higher_lows: bool = False,
+    vwap_hold: bool = False,
+    vwap_reclaim: bool = False,
+    breakout_pressure: float = 0.0,
+    resistance_distance_pct: float = 99.0,
+    trigger_price: float = 0.0,
+    movement_start_price: float = 0.0,
+    volume_acceleration_1m: float = 0.0,
+    volume_acceleration_slope: float = 0.0,
+    rvol: float = 0.0,
+    rvol_same_time: float | None = None,
+    trade_velocity_growth: float | None = None,
+    dollar_volume_growth: float = 0.0,
+    persistence_minutes: int = 0,
+    bars: pd.DataFrame | None = None,
+    reacceleration: bool = False,
+) -> RealPriceJumpVerdict:
+    """
+    Confirmed upward price jump — price action required; volume/RVOL are supplementary only.
+    """
+    out = RealPriceJumpVerdict()
+    if change_pct <= 0 or current_price <= 0:
+        out.reject_reason = "no_upward_move"
+        return out
+
+    acc_1m, acc_3m, _ = compute_price_acceleration(bars)
+    price_accel = acc_1m > 0.08 or acc_3m > 0.2 or price_volume_response >= 0.35
+    if bars is None or bars.empty:
+        price_accel = price_accel or (
+            price_volume_response >= 0.35 and change_pct >= STAGE_EE_MIN_SESSION_CHANGE_PCT
+        )
+
+    higher_high = _higher_high_or_breakout(
+        current_price=current_price,
+        micro_higher_lows=micro_higher_lows or vwap_hold or vwap_reclaim,
+        trigger_price=trigger_price,
+        breakout_pressure=breakout_pressure,
+        resistance_distance_pct=resistance_distance_pct,
+        bars=bars,
+    )
+    persistence = _multi_tick_upward_persistence(
+        bars=bars,
+        persistence_minutes=persistence_minutes,
+        micro_higher_lows=micro_higher_lows,
+        price_volume_response=price_volume_response,
+        change_pct=change_pct,
+        reacceleration=reacceleration,
+    )
+
+    move_start = movement_start_price
+    if move_start <= 0 and trigger_price > 0:
+        move_start = trigger_price * 0.985
+    price_above_start = move_start <= 0 or current_price > move_start
+
+    momentum = change_pct > 0 and price_volume_response >= 0.2
+
+    checks = [
+        ("price_accel", price_accel),
+        ("higher_high_breakout", higher_high),
+        ("multi_tick", persistence),
+        ("above_move_start", price_above_start),
+        ("momentum", momentum),
+    ]
+    out.evidence_factors = [name for name, ok in checks if ok]
+
+    if not all(ok for _, ok in checks):
+        missing = [name for name, ok in checks if not ok]
+        out.reject_reason = f"missing_{'_'.join(missing)}"
+        return out
+
+    rvol_eff = _effective_rvol(rvol=rvol, rvol_same_time=rvol_same_time)
+    if (
+        volume_acceleration_1m >= STAGE_VOL_ACCEL_MIN * 0.85
+        or volume_acceleration_slope >= 1.05
+        or rvol_eff >= STAGE_RVOL_MIN * 0.85
+        or (trade_velocity_growth or 0) >= 0.12
+        or dollar_volume_growth >= 0.2
+    ):
+        out.evidence_factors.append("volume_confirmation")
+
+    out.confirmed = True
+    return out
+
+
+def real_price_jump_from_snapshot(
+    snap: StageSnapshot,
+    *,
+    bars: pd.DataFrame | None = None,
+    movement_start_price: float = 0.0,
+    persistence_minutes: int = 0,
+    reacceleration: bool = False,
+) -> RealPriceJumpVerdict:
+    return evaluate_real_price_jump(
+        current_price=snap.price,
+        change_pct=snap.change_pct,
+        price_volume_response=snap.price_volume_response,
+        micro_higher_lows=snap.micro_higher_lows,
+        vwap_hold=snap.vwap_hold,
+        vwap_reclaim=snap.vwap_reclaim,
+        breakout_pressure=snap.breakout_pressure,
+        resistance_distance_pct=snap.resistance_distance_pct,
+        trigger_price=snap.trigger_price,
+        movement_start_price=movement_start_price,
+        volume_acceleration_1m=snap.volume_acceleration_1m,
+        volume_acceleration_slope=snap.volume_acceleration_slope,
+        rvol=snap.rvol,
+        rvol_same_time=snap.rvol_same_time,
+        trade_velocity_growth=snap.trade_velocity_growth,
+        dollar_volume_growth=snap.dollar_volume_growth,
+        persistence_minutes=persistence_minutes,
+        bars=bars,
+        reacceleration=reacceleration,
+    )
 
 
 @dataclass
@@ -470,6 +664,11 @@ def evaluate_watch_to_jump_confirmation(
         return out
     if not price_accel and not vol_sustained:
         out.reject_reason = "momentum_faded"
+        return out
+
+    jump = real_price_jump_from_snapshot(snap, bars=bars)
+    if not jump.confirmed:
+        out.reject_reason = jump.reject_reason or "no_real_price_jump"
         return out
 
     out.promote = True

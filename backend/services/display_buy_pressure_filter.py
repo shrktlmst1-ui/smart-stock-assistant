@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from analysis.early_upward_surge import (
+    DISPLAY_JUMP_ALERT,
+    DISPLAY_STRONG_BUY_WATCH,
+    evaluate_real_price_jump,
     fast_filter_surge_rank,
     relative_surge_detected,
     relative_surge_from_signal,
@@ -24,9 +27,6 @@ from config import (
 from models.jump_alert import QUALIFIED_JUMP_SIGNALS
 from models.opportunity_now import OpportunityNowSignal
 from models.pre_move import PreMoveSignal
-
-DISPLAY_STRONG_BUY_WATCH = "STRONG_BUY_WATCH"
-DISPLAY_JUMP_ALERT = "JUMP_ALERT"
 
 _EXCLUDED_PREMOVE = frozenset({
     "NO_SETUP",
@@ -177,13 +177,120 @@ def _passes_freshness_gate(sig: PreMoveSignal) -> bool:
     return True
 
 
+def _movement_start_price(sig: PreMoveSignal) -> float:
+    if sig.first_detected_price > 0:
+        return sig.first_detected_price
+    if sig.entry_low > 0:
+        return sig.entry_low
+    if sig.trigger_price > 0:
+        return sig.trigger_price * 0.985
+    return 0.0
+
+
+def real_price_jump_from_premove(sig: PreMoveSignal):
+    ctx = context_from_premove(sig)
+    return evaluate_real_price_jump(
+        current_price=sig.current_price,
+        change_pct=sig.change_percent,
+        price_volume_response=ctx.price_volume_response,
+        micro_higher_lows=ctx.micro_higher_lows,
+        vwap_hold=ctx.vwap_hold,
+        vwap_reclaim=ctx.vwap_reclaim,
+        breakout_pressure=ctx.breakout_pressure,
+        resistance_distance_pct=ctx.resistance_distance_pct,
+        trigger_price=sig.trigger_price,
+        movement_start_price=_movement_start_price(sig),
+        volume_acceleration_1m=ctx.volume_acceleration_1m,
+        volume_acceleration_slope=ctx.volume_acceleration_slope,
+        rvol=ctx.rvol,
+        rvol_same_time=ctx.rvol_same_time,
+        trade_velocity_growth=ctx.trade_velocity_growth,
+        dollar_volume_growth=ctx.dollar_volume_growth,
+        persistence_minutes=sig.stage_progression.persistence_minutes,
+    )
+
+
+def real_price_jump_from_opportunity(sig: OpportunityNowSignal):
+    ctx = context_from_opportunity_signal(sig)
+    price_volume_response = ctx.price_volume_response
+    entry_high = sig.entry_zone_high or sig.entry_zone
+    if (
+        price_volume_response < 0.35
+        and sig.jump_qualified
+        and sig.change_percent >= STAGE_EE_MIN_SESSION_CHANGE_PCT
+        and entry_high > 0
+        and sig.price >= entry_high * 0.992
+    ):
+        price_volume_response = max(price_volume_response, 0.35)
+    return evaluate_real_price_jump(
+        current_price=sig.price,
+        change_pct=sig.change_percent,
+        price_volume_response=price_volume_response,
+        micro_higher_lows=ctx.micro_higher_lows,
+        vwap_hold=ctx.vwap_hold,
+        vwap_reclaim=ctx.vwap_reclaim,
+        breakout_pressure=ctx.breakout_pressure or (45.0 if sig.detection_stage == "EXPLOSIVE" else 0.0),
+        resistance_distance_pct=ctx.resistance_distance_pct,
+        trigger_price=entry_high,
+        movement_start_price=sig.entry_zone_low or sig.entry_zone,
+        volume_acceleration_1m=sig.volume_acceleration,
+        rvol=sig.rvol or sig.relative_volume,
+        trade_velocity_growth=ctx.trade_velocity_growth,
+        persistence_minutes=sig.consecutive_confirmations,
+    )
+
+
+def classify_jump_display_type(
+    *,
+    requested_type: str,
+    real_jump_confirmed: bool,
+    monitoring_worthy: bool,
+) -> str:
+    if requested_type == DISPLAY_STRONG_BUY_WATCH:
+        return DISPLAY_STRONG_BUY_WATCH
+    if requested_type == DISPLAY_JUMP_ALERT:
+        if real_jump_confirmed:
+            return DISPLAY_JUMP_ALERT
+        if monitoring_worthy:
+            return DISPLAY_STRONG_BUY_WATCH
+        return DISPLAY_JUMP_ALERT
+    if real_jump_confirmed:
+        return DISPLAY_JUMP_ALERT
+    if monitoring_worthy:
+        return DISPLAY_STRONG_BUY_WATCH
+    return requested_type
+
+
+def display_sort_tier(display_type: str) -> int:
+    if display_type == DISPLAY_JUMP_ALERT:
+        return 0
+    if display_type == DISPLAY_STRONG_BUY_WATCH:
+        return 1
+    return 2
+
+
+def display_sort_key(sig: OpportunityNowSignal) -> tuple:
+    return (
+        display_sort_tier(sig.display_type),
+        -sig.buy_pressure_score,
+        -sig.confluence_count,
+        -sig.score,
+    )
+
+
 def evaluate_premove_display(sig: PreMoveSignal) -> DisplayVerdict:
     if sig.display_confirmed and sig.display_type in (DISPLAY_STRONG_BUY_WATCH, DISPLAY_JUMP_ALERT):
         if _passes_freshness_gate(sig):
             ctx = context_from_premove(sig)
+            jump = real_price_jump_from_premove(sig)
+            dtype = classify_jump_display_type(
+                requested_type=sig.display_type,
+                real_jump_confirmed=jump.confirmed,
+                monitoring_worthy=True,
+            )
             return DisplayVerdict(
                 show=True,
-                display_type=sig.display_type,
+                display_type=dtype,
                 buy_pressure_score=sig.buy_pressure_score or fast_filter_surge_rank(
                     sig.change_percent, _effective_rvol(ctx),
                 ),
@@ -207,10 +314,16 @@ def evaluate_premove_display(sig: PreMoveSignal) -> DisplayVerdict:
     buy_score = fast_filter_surge_rank(sig.change_percent, _effective_rvol(ctx))
 
     lifecycle = ctx.stage_lifecycle
+    jump = real_price_jump_from_premove(sig)
     if sig.status in QUALIFIED_JUMP_SIGNALS and sig.validated and not ctx.is_too_late:
+        dtype = classify_jump_display_type(
+            requested_type=DISPLAY_JUMP_ALERT,
+            real_jump_confirmed=jump.confirmed,
+            monitoring_worthy=True,
+        )
         return DisplayVerdict(
             show=True,
-            display_type=DISPLAY_JUMP_ALERT,
+            display_type=dtype,
             buy_pressure_score=buy_score,
             confluence_count=confluence,
             confluence_factors=factors,
@@ -249,9 +362,15 @@ def evaluate_jump_alert_display(sig: OpportunityNowSignal) -> DisplayVerdict:
         return DisplayVerdict(reject_reason="not_jump_qualified")
     if sig.late_entry_warning or sig.change_percent <= 0:
         return DisplayVerdict(reject_reason="late_or_flat")
+    jump = real_price_jump_from_opportunity(sig)
+    dtype = classify_jump_display_type(
+        requested_type=DISPLAY_JUMP_ALERT,
+        real_jump_confirmed=jump.confirmed,
+        monitoring_worthy=True,
+    )
     return DisplayVerdict(
         show=True,
-        display_type=DISPLAY_JUMP_ALERT,
+        display_type=dtype,
         buy_pressure_score=sig.buy_pressure_score or sig.score,
         confluence_count=sig.confluence_count,
         confluence_factors=list(sig.confluence_factors),
@@ -286,14 +405,33 @@ def evaluate_extended_gap_display(sig: OpportunityNowSignal) -> DisplayVerdict:
         return DisplayVerdict(reject_reason="no_extended_surge")
 
     if sig.detection_stage == "EXPLOSIVE" and sig.has_confirmed_news:
-        dtype = DISPLAY_JUMP_ALERT
+        requested = DISPLAY_JUMP_ALERT
     elif sig.detection_stage in ("ACTIVE", "EXPLOSIVE", "WATCH"):
-        dtype = DISPLAY_STRONG_BUY_WATCH if sig.detection_stage != "EXPLOSIVE" else DISPLAY_JUMP_ALERT
+        requested = DISPLAY_STRONG_BUY_WATCH if sig.detection_stage != "EXPLOSIVE" else DISPLAY_JUMP_ALERT
     else:
         return DisplayVerdict(reject_reason="weak_stage")
 
     if confluence < max(3, STAGE_EE_MIN_CONFLUENCE - 2):
         return DisplayVerdict(reject_reason=f"extended_confluence_{confluence}")
+
+    jump = evaluate_real_price_jump(
+        current_price=sig.price,
+        change_pct=sig.extended_gap_pct or sig.change_percent,
+        price_volume_response=0.35 if sig.relative_volume >= STAGE_RVOL_MIN else 0.15,
+        breakout_pressure=50.0 if sig.detection_stage == "EXPLOSIVE" else 25.0,
+        resistance_distance_pct=STAGE_BREAKOUT_NEAR_PCT if sig.detection_stage == "EXPLOSIVE" else 99.0,
+        movement_start_price=sig.previous_close,
+        volume_acceleration_1m=sig.volume_acceleration,
+        rvol=sig.relative_volume,
+        trade_velocity_growth=0.2 if sig.relative_volume >= STAGE_RVOL_MIN else 0.0,
+        dollar_volume_growth=0.3 if sig.extended_volume > 50_000 else 0.0,
+        persistence_minutes=2 if sig.detection_stage == "EXPLOSIVE" else 0,
+    )
+    dtype = classify_jump_display_type(
+        requested_type=requested,
+        real_jump_confirmed=jump.confirmed,
+        monitoring_worthy=True,
+    )
 
     return DisplayVerdict(
         show=True,

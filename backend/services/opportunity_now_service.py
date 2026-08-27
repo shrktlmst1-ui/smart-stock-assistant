@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from analysis.early_upward_surge import fast_filter_surge_rank
 from config import SCANNER_TICK_SECONDS
 from models.opportunity_now import OpportunityNowResponse, OpportunityNowSignal
 from models.pre_move import PreMoveSignal
@@ -18,6 +19,7 @@ from services.display_buy_pressure_filter import (
     DISPLAY_JUMP_ALERT,
     DISPLAY_STRONG_BUY_WATCH,
     apply_display_verdict,
+    display_sort_key,
     evaluate_extended_gap_display,
     evaluate_jump_alert_display,
     evaluate_premove_display,
@@ -63,7 +65,7 @@ def _jump_alert_to_signal(alert, *, session: str) -> OpportunityNowSignal:
         expires_at=alert.expires_at,
         entry_zone=round((alert.entry_low + alert.entry_high) / 2, 4),
         entry_zone_low=alert.entry_low,
-        entry_zone_high=alert.entry_high,
+        entry_zone_high=alert.entry_high or alert.trigger_price,
         stop_loss=alert.stop_loss,
         target_1=alert.tp1,
         target_2=alert.tp2,
@@ -71,7 +73,7 @@ def _jump_alert_to_signal(alert, *, session: str) -> OpportunityNowSignal:
         risk_reward_ratio=alert.risk_reward,
         confirmed_factors=0,
         total_factors=17,
-        consecutive_confirmations=0,
+        consecutive_confirmations=max(alert.persistence_minutes, 0),
         reasons_ar=[alert.status_reason_ar] if alert.status_reason_ar else [f"PreMove {alert.score}/100"],
         cancellation_reasons_ar=[],
         late_entry_warning=alert.is_too_late,
@@ -84,6 +86,9 @@ def _jump_alert_to_signal(alert, *, session: str) -> OpportunityNowSignal:
         jump_qualified=alert.jump_qualified,
         jump_alert_created=alert.jump_alert_created,
         stage_lifecycle=stage,
+        rvol=alert.rvol,
+        volume_acceleration=alert.volume_acceleration,
+        buy_pressure_score=fast_filter_surge_rank(alert.change_percent, max(alert.rvol, 0.5)),
     )
 
 
@@ -187,15 +192,7 @@ def _collect_home_display_signals(session: str) -> list[OpportunityNowSignal]:
                 out.append(enriched)
                 seen.add(sym)
 
-    out.sort(
-        key=lambda s: (
-            s.display_type == DISPLAY_JUMP_ALERT,
-            s.buy_pressure_score,
-            s.confluence_count,
-            s.score,
-        ),
-        reverse=True,
-    )
+    out.sort(key=display_sort_key)
     return out[:3]
 
 
