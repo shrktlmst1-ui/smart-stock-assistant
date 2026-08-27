@@ -7,7 +7,11 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from analysis.early_upward_surge import relative_surge_from_snapshot, surge_direct_early_entry
+from analysis.early_upward_surge import (
+    detect_re_acceleration,
+    relative_surge_from_snapshot,
+    surge_direct_early_entry,
+)
 from config import (
     PREMOVE_MIN_RRR,
     STAGE_BREAKOUT_NEAR_PCT,
@@ -60,6 +64,7 @@ _STAGE_ORDER = {
     "PRE_BREAKOUT": 2,
     "EARLY_ENTRY": 3,
     "BREAKOUT_CONFIRMED": 4,
+    "REARMED": 2,
     "TOO_LATE_TO_CHASE": -1,
     "FAILED_SETUP": -2,
 }
@@ -674,8 +679,15 @@ def evaluate_early_entry_gate(
             return _fail()
 
     if regress:
-        blocks.append(f"regression:{','.join(regress[:2])}")
-        return _fail()
+        soft_only = {"volume_faded", "lost_vwap", "momentum_soft"}
+        if state.fast_watch_locked and relative_surge_from_snapshot(snap):
+            hard = [r for r in regress if r.split(":")[-1] not in soft_only and "broken" not in r]
+            if hard:
+                blocks.append(f"regression:{','.join(hard[:2])}")
+                return _fail()
+        else:
+            blocks.append(f"regression:{','.join(regress[:2])}")
+            return _fail()
 
     readiness = compute_trigger_readiness_score(
         snap, history, persist_min=persist_min, move_from_base_pct=move_from_base,
@@ -790,6 +802,7 @@ def evaluate_early_entry_gate(
         news_catalyst_score=news_catalyst_score or snap.news_catalyst_score,
         thresholds=quality_thresholds,
         weights=confluence_weights,
+        fast_watch_locked=state.fast_watch_locked,
     )
     if not quality.quality_gate_passed:
         blocks.extend(quality.block_reasons)
@@ -902,11 +915,25 @@ def evaluate_stage_transition(
         snapshot_count=len(all_snaps),
     )
 
-    # Late guard always wins
+    # Late guard — preserve early fast-watch; block only naked late chase
     if snap.late_guard:
+        if state.fast_watch_locked and state.first_detected_at:
+            hold = state.current_stage if state.current_stage not in ("DISCOVERED", "TOO_LATE_TO_CHASE") else "REARMED"
+            metrics.stage_lifecycle = hold  # type: ignore[assignment]
+            metrics.regression_signals = ["late_move_guard_after_early_watch"]
+            return hold, metrics
         metrics.stage_lifecycle = "TOO_LATE_TO_CHASE"
         metrics.regression_signals = ["late_move_guard"]
         return "TOO_LATE_TO_CHASE", metrics
+
+    reaccel = detect_re_acceleration(history, snap)
+    if reaccel:
+        metrics.evidence_factors = list(metrics.evidence_factors or []) + ["re_acceleration"]
+
+    if state.current_stage == "FAILED_SETUP" and reaccel:
+        metrics.stage_lifecycle = "REARMED"
+        metrics.escalation_ready = True
+        return "REARMED", metrics
 
     regress = _regression_signals(snap, history)
     metrics.regression_signals = regress
@@ -928,14 +955,14 @@ def evaluate_stage_transition(
     metrics.pb_persistence_windows = pb_windows
     metrics.resistance_approaching = approaching
 
-    if snap.failed_setup or (len(regress) >= 3 and state.current_stage in ("PRE_BREAKOUT", "EARLY_ENTRY")):
+    if (snap.failed_setup or (len(regress) >= 3 and state.current_stage in ("PRE_BREAKOUT", "EARLY_ENTRY"))) and not reaccel:
         metrics.stage_lifecycle = "FAILED_SETUP"
         return "FAILED_SETUP", metrics
 
     if peak_prog - effective_score >= STAGE_REGRESSION_DROP and state.current_stage in (
         "PRE_BREAKOUT", "EARLY_ENTRY", "EARLY_WATCH",
     ):
-        if snap.failed_setup or len(regress) >= 2:
+        if (snap.failed_setup or len(regress) >= 2) and not reaccel:
             metrics.stage_lifecycle = "FAILED_SETUP"
             return "FAILED_SETUP", metrics
 
@@ -1073,8 +1100,27 @@ def evaluate_stage_transition(
     elif current == "BREAKOUT_CONFIRMED":
         target = "BREAKOUT_CONFIRMED"
 
-    elif current in ("FAILED_SETUP", "TOO_LATE_TO_CHASE"):
-        target = current
+    elif current == "FAILED_SETUP":
+        if reaccel or relative_surge_from_snapshot(snap):
+            target = "REARMED"
+            metrics.escalation_ready = True
+        else:
+            target = "FAILED_SETUP"
+
+    elif current == "REARMED":
+        if _pre_breakout_ready(snap, effective_score, persist_min, trend) or _surge_burst_pre_breakout(
+            snap, effective_score, ew_signals, trend,
+        ):
+            target = "PRE_BREAKOUT"
+            metrics.escalation_ready = True
+        elif ew_signals >= 2 and effective_score >= STAGE_EW_MIN_PROGRESSION - 4:
+            target = "EARLY_WATCH"
+            metrics.escalation_ready = True
+        else:
+            target = "REARMED"
+
+    elif current == "TOO_LATE_TO_CHASE":
+        target = "TOO_LATE_TO_CHASE"
 
     # Fresh discovery path (no prior stage)
     if current == "DISCOVERED" and target == "DISCOVERED":
@@ -1103,6 +1149,8 @@ def lifecycle_to_status(
         return "TOO_LATE_TO_CHASE"
     if lifecycle == "FAILED_SETUP":
         return "FAILED_SETUP"
+    if lifecycle == "REARMED":
+        return "EARLY_WATCH"
     if lifecycle == "BREAKOUT_CONFIRMED":
         return "CONFIRMED_ENTRY"
     if lifecycle == "EARLY_ENTRY":
@@ -1131,6 +1179,7 @@ def stage_rank_for_sort(
         "EARLY_ENTRY": 400,
         "PRE_BREAKOUT": 300,
         "EARLY_WATCH": 200,
+        "REARMED": 180,
         "DISCOVERED": 50,
         "FAILED_SETUP": -50,
         "TOO_LATE_TO_CHASE": -100,

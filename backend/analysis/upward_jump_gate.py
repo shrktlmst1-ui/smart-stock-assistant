@@ -58,7 +58,12 @@ def evaluate_upward_jump(sig: PreMoveSignal) -> tuple[bool, str]:
         sig.volume.volume_acceleration_1m >= STAGE_VOL_ACCEL_MIN
         or sig.volume.volume_acceleration >= STAGE_VOL_ACCEL_MIN
     )
-    rvol_ok = sig.volume.rvol >= STAGE_RVOL_MIN
+    rvol_ok = (
+        sig.volume.rvol >= STAGE_RVOL_MIN
+        or (sig.volume.rvol_same_time or 0) >= STAGE_RVOL_MIN
+        or relative_surge_from_signal(sig)
+        or sig.fast_upward_path
+    )
     trade_vel = sig.early_activity.trade_velocity
     trade_vel_ok = trade_vel is None or trade_vel > 0
     surge = relative_surge_from_signal(sig)

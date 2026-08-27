@@ -51,6 +51,8 @@ class ShardState:
     authenticated: bool = False
     last_error: str = ""
     reconnect_count: int = 0
+    auth_fail_streak: int = 0
+    had_successful_session: bool = False
 
 
 def _channels_for_symbols(symbols: set[str], channel_types: tuple[str, ...]) -> set[str]:
@@ -169,7 +171,19 @@ class StocksWsHub:
             "symbols_target": len(self._desired_symbols),
             "consumers": list(self._consumers.keys()),
             "subscribed_channels": sum(len(s.subscribed_channels) for s in self._shards),
+            "reconnect_total": sum(s.reconnect_count for s in self._shards),
         }
+
+    @property
+    def shards_connected(self) -> int:
+        return sum(1 for s in self._shards if s.connected and s.authenticated)
+
+    async def recover_shards(self) -> None:
+        """Watchdog nudge — resync subscriptions without tearing down hub state."""
+        if not self._running:
+            return
+        await self.apply_pending_sync()
+        await self._sync_all_shards()
 
     async def start(self) -> None:
         if self._running:
@@ -250,10 +264,28 @@ class StocksWsHub:
             len(self._desired_symbols),
             len(partitions),
         )
-        for task in self._shard_tasks:
+        old_tasks = list(self._shard_tasks)
+        for task in old_tasks:
             if not task.done():
                 task.cancel()
         self._spawn_shards()
+        # Best-effort await cancelled tasks so we don't stack duplicate sockets.
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._await_cancelled(old_tasks))
+        except RuntimeError:
+            pass
+
+    async def _await_cancelled(self, tasks: list[asyncio.Task]) -> None:
+        for task in tasks:
+            if task.done():
+                continue
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
 
     async def _sync_all_shards(self) -> None:
         for shard in self._shards:
@@ -319,29 +351,49 @@ class StocksWsHub:
             subscribed=subscribed_syms,
         )
 
+    def _backoff_for_error(self, err: str, current: float) -> float:
+        err_l = err.lower()
+        if "max_connections" in err_l:
+            live_price_registry.set_error(f"ws:{err[:120]}")
+            return max(current, 30.0)
+        if "auth_failed" in err_l:
+            live_price_registry.set_error(f"ws:{err[:120]}")
+            return max(current, 60.0)
+        if "policy" in err_l or "1008" in err_l:
+            live_price_registry.set_error(f"ws:{err[:120]}")
+            return max(current, 5.0)
+        live_price_registry.set_error(f"ws:{err[:120]}")
+        return current
+
     async def _run_shard(self, shard: ShardState) -> None:
         backoff = 2.0
         max_backoff = 60.0
         api_key = get_polygon_api_key()
         if not api_key:
             shard.last_error = "no_api_key"
+            live_price_registry.set_error("no_api_key")
             return
 
         while self._running:
+            ws = None
             try:
-                shard.reconnect_count += 1
-                live_price_registry.note_reconnect()
-                shard.subscribed_channels.clear()
+                if shard.had_successful_session:
+                    shard.reconnect_count += 1
+                    live_price_registry.note_reconnect()
                 async with websockets.connect(POLYGON_WS_URL, ping_interval=20, ping_timeout=20) as ws:
                     shard._ws = ws  # type: ignore[attr-defined]
                     await ws.send(json.dumps({"action": "auth", "params": api_key}))
                     auth_ok, auth_msg = await _wait_ws_auth(ws)
                     if not auth_ok:
+                        shard.auth_fail_streak += 1
                         raise ConnectionError(f"auth_failed:{auth_msg}")
 
+                    shard.auth_fail_streak = 0
                     shard.connected = True
                     shard.authenticated = True
                     shard.last_error = ""
+                    shard.had_successful_session = True
+                    live_price_registry.set_error("")
                     self._publish_registry_health()
                     logger.info("[STOCKS_WS] shard=%d connected symbols=%d", shard.shard_id, len(shard.symbols))
 
@@ -377,12 +429,21 @@ class StocksWsHub:
                             if "1008" in msg or "policy" in msg.lower():
                                 shard.last_error = msg
                                 self._subscribe_batch_size = max(10, self._subscribe_batch_size // 2)
-                                logger.error(
-                                    "[STOCKS_WS] shard=%d policy violation — retry smaller batches (%d)",
+                                logger.warning(
+                                    "[STOCKS_WS] shard=%d policy — resubscribe smaller batches (%d)",
                                     shard.shard_id,
                                     self._subscribe_batch_size,
                                 )
-                                raise ConnectionError(f"policy:{msg}")
+                                shard.subscribed_channels.clear()
+                                desired_now = self._shard_desired_channels(shard)
+                                if desired_now:
+                                    await self._send_batched(
+                                        ws, "subscribe", sorted(desired_now),
+                                        batch_size=self._subscribe_batch_size,
+                                    )
+                                    shard.subscribed_channels = set(desired_now)
+                                    self._publish_registry_health()
+                                continue
                             continue
                         live_price_registry.note_message_received()
                         for handler in self._raw_handlers:
@@ -398,15 +459,20 @@ class StocksWsHub:
             except websockets.exceptions.ConnectionClosedError as exc:
                 code = getattr(exc, "code", None)
                 shard.last_error = str(code or exc)
+                live_price_registry.set_error(f"closed:{code or exc}")
                 logger.warning("[STOCKS_WS] shard=%d closed code=%s", shard.shard_id, code)
             except Exception as exc:
                 shard.last_error = str(exc)[:200]
+                backoff = self._backoff_for_error(shard.last_error, backoff)
+                if "auth_failed" in shard.last_error and shard.auth_fail_streak >= 5:
+                    logger.error("[STOCKS_WS] shard=%d auth circuit-breaker — pausing 5min", shard.shard_id)
+                    backoff = max(backoff, 300.0)
                 logger.warning("[STOCKS_WS] shard=%d error %s", shard.shard_id, type(exc).__name__)
             finally:
                 shard.connected = False
                 shard.authenticated = False
                 shard._ws = None  # type: ignore[attr-defined]
-                shard.subscribed_channels.clear()
+                # Keep subscribed_channels intent — resubscribe on reconnect, don't lose consumer state.
                 self._publish_registry_health()
 
             if not self._running:

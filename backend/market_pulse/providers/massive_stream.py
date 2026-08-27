@@ -47,6 +47,7 @@ class MassiveMarketStreamProvider:
             "LULD": [],
         }
         self._backoff = MARKET_PULSE_WS_BACKOFF_BASE
+        self._using_hub = False
 
     @property
     def has_credentials(self) -> bool:
@@ -64,10 +65,41 @@ class MassiveMarketStreamProvider:
     async def start(self) -> None:
         if self._running or not self._api_key:
             return
+        try:
+            from services.stocks_ws_hub import stocks_ws_hub
+
+            if stocks_ws_hub.is_running:
+                stocks_ws_hub.set_consumer(
+                    "market_pulse",
+                    self._subs.symbols(),
+                    ("A", "AM", "T", "Q", "LULD"),
+                )
+                stocks_ws_hub.add_raw_handler(self._handle_raw_payload)
+                self._using_hub = True
+                self.connected = True
+                self._running = True
+                logger.info("[STOCKS_WS] market_pulse using shared hub (%d symbols)", self._subs.count())
+                return
+        except ImportError:
+            pass
+
+        self._using_hub = False
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
+        if getattr(self, "_using_hub", False):
+            try:
+                from services.stocks_ws_hub import stocks_ws_hub
+
+                stocks_ws_hub.remove_raw_handler(self._handle_raw_payload)
+                stocks_ws_hub.clear_consumer("market_pulse")
+            except ImportError:
+                pass
+            self.connected = False
+            self._running = False
+            self._using_hub = False
+            return
         self._running = False
         if self._ws:
             try:
@@ -144,6 +176,9 @@ class MassiveMarketStreamProvider:
             payload = json.loads(raw)
         except json.JSONDecodeError:
             return
+        await self._handle_raw_payload(payload)
+
+    async def _handle_raw_payload(self, payload: list | dict) -> None:
         rows = payload if isinstance(payload, list) else [payload]
         for row in rows:
             if not isinstance(row, dict):

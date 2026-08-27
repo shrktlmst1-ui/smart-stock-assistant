@@ -11,9 +11,14 @@ from typing import Any
 import pandas as pd
 
 from analysis.early_upward_surge import (
+    DISPLAY_JUMP_ALERT,
+    DISPLAY_STRONG_BUY_WATCH,
+    evaluate_fast_upward_jump,
+    evaluate_watch_to_jump_confirmation,
     fast_filter_surge_rank,
     relative_surge_detected,
 )
+from analysis.pre_move_breakout import compute_breakout_metrics
 from analysis.pre_move_compression import compute_compression_metrics
 from analysis.pre_move_early_activity import (
     check_failed_setup,
@@ -51,6 +56,7 @@ from config import (
     PREMOVE_MIN_SCORE_DISPLAY,
     SCANNER_MAX_PRICE,
     SCANNER_MIN_PRICE,
+    STAGE_VOL_ACCEL_MIN,
 )
 from database.pre_move_db import upsert_prediction
 from models.pre_move import PreMoveLifecycleEvent, PreMoveScanResult, PreMoveScanStats, PreMoveSignal
@@ -64,7 +70,7 @@ from services.market_session import (
     get_us_market_session,
     trading_session_date_et,
 )
-from services.pre_move_stage_store import clear_stale_states, get_or_create_state, list_active_stage_symbols, update_stage_state
+from services.pre_move_stage_store import clear_stale_states, get_or_create_state, list_pinned_deep_scan_symbols, update_stage_state
 from services.news_service import fetch_stock_news
 from services.scanner_filters import parse_snapshot_item
 from services.session_price import (
@@ -315,21 +321,24 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
             data_timestamp=now_iso,
         )
 
+    session_date = trading_session_date_et()
+    stage_state = get_or_create_state(sym, session_date)
+
     fast_upward_path = False
-    if len(bars) < PREMOVE_MIN_ANALYSIS_BARS and len(bars) >= 2 and change_pct > 0:
-        early_vol = compute_volume_metrics(bars)
+    if len(bars) >= 2 and change_pct > 0:
+        early_vol_probe = compute_volume_metrics(bars)
         fast_upward_path = relative_surge_detected(
             change_percent=change_pct,
-            volume_acceleration_1m=early_vol.volume_acceleration_1m,
-            volume_acceleration_slope=early_vol.volume_acceleration_slope,
-            rvol=early_vol.rvol,
-        )
-        if fast_upward_path:
+            volume_acceleration_1m=early_vol_probe.volume_acceleration_1m,
+            volume_acceleration_slope=early_vol_probe.volume_acceleration_slope,
+            rvol=early_vol_probe.rvol,
+            rvol_same_time=early_vol_probe.rvol_same_time,
+            allow_soft_rvol=True,
+        ) or early_vol_probe.volume_acceleration_1m >= STAGE_VOL_ACCEL_MIN
+        if fast_upward_path and len(bars) < PREMOVE_MIN_ANALYSIS_BARS:
             logger.info(
                 "[JUMP] %s FAST_UPWARD_JUMP_PATH bars=%d (min=%d)",
-                sym,
-                len(bars),
-                PREMOVE_MIN_ANALYSIS_BARS,
+                sym, len(bars), PREMOVE_MIN_ANALYSIS_BARS,
             )
 
     min_bars = 2 if fast_upward_path else PREMOVE_MIN_ANALYSIS_BARS
@@ -414,12 +423,15 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
         change_pct=change_pct, too_late=late.is_too_late,
     )
 
+    had_watch = (
+        stage_state.current_stage in ("EARLY_WATCH", "PRE_BREAKOUT", "EARLY_ENTRY", "REARMED")
+        or bool(stage_state.first_detected_at)
+        or stage_state.fast_watch_locked
+    )
     failed = check_failed_setup(
-        bars, early, base_price=base_price, price=price, had_early_watch=False,
+        bars, early, base_price=base_price, price=price, had_early_watch=had_watch,
     )
 
-    session_date = trading_session_date_et()
-    stage_state = get_or_create_state(sym, session_date)
     prior_stage = stage_state.current_stage
     prior_snaps = stage_state.history()
     prior_peak = max((s.price for s in prior_snaps), default=price)
@@ -496,6 +508,27 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
 
     stage_state = update_stage_state(sym, session_date, snap, new_lifecycle, stage_metrics)
 
+    fast_verdict = evaluate_fast_upward_jump(
+        snap,
+        history=stage_state.history(),
+        bars=bars,
+        lifecycle=new_lifecycle,
+        early_watch_locked=stage_state.fast_watch_locked,
+        for_jump_alert=new_lifecycle in ("EARLY_ENTRY", "BREAKOUT_CONFIRMED"),
+    )
+    if fast_verdict.qualified:
+        if stage_state.fast_watch_locked and fast_verdict.reacceleration:
+            stage_state.reacceleration_count += 1
+            stage_state.fast_watch_at = now_iso
+            stage_state.fast_watch_price = price
+        elif not stage_state.fast_watch_locked:
+            stage_state.fast_watch_locked = True
+            stage_state.fast_watch_at = now_iso
+            stage_state.fast_watch_price = price
+            if fast_verdict.reacceleration:
+                stage_state.reacceleration_count += 1
+        stage_state.fast_watch_display_type = fast_verdict.display_type
+
     logger.info(
         "JUMP_STAGE_STATE symbol=%s previous_stage=%s current_stage=%s stage_since_min=%.2f "
         "persistence_min=%d premove_score=%d stage_prog=%.1f trigger_price=%.4f",
@@ -566,6 +599,26 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
         lifecycle_history=[PreMoveLifecycleEvent(at=now_iso, status=status, score=score, price=price)],
     )
 
+    if fast_verdict.qualified:
+        sig.display_type = fast_verdict.display_type
+        sig.display_confirmed = True
+        sig.fast_upward_path = True
+        sig.buy_pressure_score = round(fast_verdict.buy_pressure_score, 2)
+        sig.confluence_count = fast_verdict.confluence_count
+        sig.confluence_factors = list(fast_verdict.confluence_factors)
+        stage_state.fast_watch_display_type = fast_verdict.display_type
+    elif stage_state.fast_watch_locked and stage_state.fast_watch_display_type:
+        sig.display_confirmed = True
+        if new_lifecycle in ("EARLY_ENTRY", "BREAKOUT_CONFIRMED"):
+            sig.display_type = DISPLAY_JUMP_ALERT
+        else:
+            sig.display_type = stage_state.fast_watch_display_type
+        sig.fast_upward_path = True
+        if not sig.first_detected_at:
+            sig.first_detected_at = stage_state.fast_watch_at
+        if not sig.first_detected_price:
+            sig.first_detected_price = stage_state.fast_watch_price
+
     ok, reject = validate_signal(sig)
     sig.validated = ok
     if not ok:
@@ -574,7 +627,7 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
             "EARLY_ENTRY", "HIGH_CONVICTION_EARLY",
         ):
             jump_engine_monitor.log_jump_rejected(sym, reject)
-        if reject == "TOO_LATE_TO_CHASE":
+        if reject == "TOO_LATE_TO_CHASE" and not sig.display_confirmed:
             sig.status = "TOO_LATE_TO_CHASE"
             sig.emoji = status_emoji("TOO_LATE_TO_CHASE")
 
@@ -584,6 +637,40 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
         sig.rejection_reason = "LOW_LIQUIDITY"
         sig.validated = False
         jump_engine_monitor.log_jump_rejected(sym, "LOW_LIQUIDITY")
+
+    # STRONG_BUY_WATCH → JUMP_QUALIFIED when live confirmation evidence stacks.
+    if (
+        stage_state.fast_watch_locked
+        and sig.display_confirmed
+        and sig.display_type == DISPLAY_STRONG_BUY_WATCH
+        and not late.is_too_late
+        and sig.change_percent > 0
+    ):
+        promo = evaluate_watch_to_jump_confirmation(
+            snap,
+            bars=bars,
+            lifecycle=new_lifecycle,
+            data_age_seconds=sig.data_age_seconds,
+            stale_price=False,
+        )
+        if promo.promote:
+            from analysis.upward_jump_gate import evaluate_upward_jump
+
+            up_ok, up_reject = evaluate_upward_jump(sig)
+            if up_ok:
+                jump_engine_monitor.log_jump_qualified(sym)
+                from services.jump_alert_registry import jump_alert_registry
+
+                jump_alert_registry.create_from_signal(sig)
+                sig.display_type = DISPLAY_JUMP_ALERT
+                sig.display_confirmed = True
+                stage_state.fast_watch_display_type = DISPLAY_JUMP_ALERT
+                ctx_rvol = sig.volume.rvol_same_time or sig.volume.rvol
+                sig.buy_pressure_score = round(fast_filter_surge_rank(sig.change_percent, ctx_rvol), 2)
+            else:
+                jump_engine_monitor.log_jump_rejected(sym, up_reject)
+        elif promo.reject_reason in ("momentum_faded", "momentum_lost", "failed_setup"):
+            logger.debug("[JUMP] %s watch hold — %s", sym, promo.reject_reason)
 
     if sig.validated and sig.status in ("EARLY_ENTRY", "HIGH_CONVICTION_EARLY"):
         from analysis.upward_jump_gate import evaluate_upward_jump, upward_stage_label
@@ -606,6 +693,10 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
             from services.jump_alert_registry import jump_alert_registry
 
             jump_alert_registry.create_from_signal(sig)
+            sig.display_type = "JUMP_ALERT"
+            sig.display_confirmed = True
+            ctx_rvol = sig.volume.rvol_same_time or sig.volume.rvol
+            sig.buy_pressure_score = round(fast_filter_surge_rank(sig.change_percent, ctx_rvol), 2)
 
     return sig
 
@@ -640,7 +731,7 @@ async def scan_pre_move_async(
         from services.market_scanner_service import market_scanner as _scanner
         from services.stocks_ws_hub import stocks_ws_hub
 
-        if stocks_ws_hub.is_running():
+        if stocks_ws_hub.is_running:
             rank = list(_scanner._rank_pool[:50])
             monitor = list(dict.fromkeys(rank + _last_premove_monitor_symbols))
             stocks_ws_hub.set_consumer("jump", monitor, ("T", "Q"))
@@ -648,7 +739,7 @@ async def scan_pre_move_async(
         pass
 
     deep_n = deep_limit or PREMOVE_DEEP_LIMIT
-    pinned_syms = list_active_stage_symbols()
+    pinned_syms = list_pinned_deep_scan_symbols()
     seen = {c["symbol"] for c in candidates}
     pinned: list[dict[str, Any]] = []
     for sym in pinned_syms:
@@ -713,11 +804,11 @@ async def scan_pre_move_async(
             stats.rejected_liquidity += 1
             rejected.append(sig)
             continue
-        if sig.status == "TOO_LATE_TO_CHASE":
+        if sig.status == "TOO_LATE_TO_CHASE" and not sig.display_confirmed:
             stats.too_late += 1
             rejected.append(sig)
             continue
-        if not sig.validated and sig.rejection_reason:
+        if not sig.validated and sig.rejection_reason and not sig.display_confirmed:
             stats.rejected_validation += 1
             rejected.append(sig)
             continue
@@ -731,8 +822,11 @@ async def scan_pre_move_async(
 
         stage_score = sig.stage_progression.stage_progression_score
         display_ok = (
-            sig.status not in ("NO_SETUP", "INSUFFICIENT_DATA", "FAILED_SETUP")
-            and (sig.pre_move_score >= PREMOVE_MIN_SCORE_DISPLAY or stage_score >= 32)
+            sig.display_confirmed
+            or (
+                sig.status not in ("NO_SETUP", "INSUFFICIENT_DATA", "FAILED_SETUP")
+                and (sig.pre_move_score >= PREMOVE_MIN_SCORE_DISPLAY or stage_score >= 32)
+            )
         )
         if display_ok:
             signals.append(sig)

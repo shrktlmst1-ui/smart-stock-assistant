@@ -378,6 +378,7 @@ def evaluate_early_entry_quality_gate(
     news_catalyst_score: float = 0.0,
     thresholds: QualityGateThresholds | None = None,
     weights: ConfluenceWeights | None = None,
+    fast_watch_locked: bool = False,
 ) -> EarlyEntryQualityMetrics:
     """Quality layer — runs after timing gate passes; rejects weak setups."""
     th = thresholds or DEFAULT_THRESHOLDS
@@ -450,6 +451,9 @@ def evaluate_early_entry_quality_gate(
         higher_low_broken=hl_broken,
         thresholds=th,
     )
+    if fast_watch_locked and snap.volume_acceleration_1m >= STAGE_VOL_ACCEL_MIN:
+        blocks = [b for b in blocks if not b.startswith("churn_volume_")]
+        passed = len(blocks) == 0
     m.block_reasons = blocks
     m.quality_gate_passed = passed
 

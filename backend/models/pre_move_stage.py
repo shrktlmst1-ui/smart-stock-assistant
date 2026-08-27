@@ -16,6 +16,7 @@ StageLifecycle = Literal[
     "BREAKOUT_CONFIRMED",
     "TOO_LATE_TO_CHASE",
     "FAILED_SETUP",
+    "REARMED",
 ]
 
 
@@ -114,6 +115,11 @@ class RollingStageState:
     pb_consecutive_windows: int = 0
     snapshots: deque = field(default_factory=lambda: deque(maxlen=8))
     last_updated: float = 0.0
+    fast_watch_locked: bool = False
+    fast_watch_at: str = ""
+    fast_watch_price: float = 0.0
+    fast_watch_display_type: str = ""
+    reacceleration_count: int = 0
 
     def append(self, snap: StageSnapshot) -> None:
         self.snapshots.append(snap)

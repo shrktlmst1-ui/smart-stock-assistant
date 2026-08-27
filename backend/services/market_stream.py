@@ -137,9 +137,12 @@ class MarketStream:
             })
 
     async def _run_watchdog(self) -> None:
-        """Self-healing — restart scanner tick if it exits unexpectedly."""
+        """Self-healing — restart scanner tick / WS hub if feed stalls."""
+        hub_down_since: float | None = None
+        stale_feed_since: float | None = None
+        last_trades = 0
         while self._running:
-            await asyncio.sleep(30)
+            await asyncio.sleep(15)
             if not self._running:
                 break
             if self._tick_task and self._tick_task.done():
@@ -148,11 +151,39 @@ class MarketStream:
                 jump_engine_monitor.record_error(err)
                 logger.error("[JUMP] Scanner tick task died (%s) — auto-restarting", exc)
                 self._tick_task = asyncio.create_task(self._run_fast_tick())
-            if WEBSOCKET_ENABLED and self._hub_started and not stocks_ws_hub.is_running:
-                jump_engine_monitor.record_error("stocks_ws_hub_stopped")
-                logger.error("[JUMP] Stocks WS hub stopped — auto-restarting")
-                stocks_ws_hub.add_raw_handler(self._handle_ws_payload)
-                await stocks_ws_hub.start()
+            if WEBSOCKET_ENABLED and self._hub_started:
+                if not stocks_ws_hub.is_running:
+                    jump_engine_monitor.record_error("stocks_ws_hub_stopped")
+                    logger.error("[JUMP] Stocks WS hub stopped — auto-restarting")
+                    stocks_ws_hub.add_raw_handler(self._handle_ws_payload)
+                    await stocks_ws_hub.start()
+                else:
+                    connected = stocks_ws_hub.shards_connected
+                    now = time.monotonic()
+                    if connected == 0:
+                        if hub_down_since is None:
+                            hub_down_since = now
+                        elif now - hub_down_since >= 15:
+                            jump_engine_monitor.record_error("ws_shards_down")
+                            logger.warning("[JUMP] WS shards disconnected — forcing resync")
+                            await stocks_ws_hub.recover_shards()
+                            hub_down_since = None
+                    else:
+                        hub_down_since = None
+
+                    trades = live_price_registry.status.trades_received
+                    msg_age = live_price_registry.ws_message_age_seconds()
+                    if trades > 0 and msg_age > 90:
+                        if stale_feed_since is None:
+                            stale_feed_since = now
+                        elif now - stale_feed_since >= 30:
+                            jump_engine_monitor.record_error(f"ws_stale_feed age={msg_age:.0f}s")
+                            logger.warning("[JUMP] WS feed stale (%.0fs) — recover", msg_age)
+                            await stocks_ws_hub.recover_shards()
+                            stale_feed_since = None
+                    elif trades > last_trades or msg_age <= 45:
+                        stale_feed_since = None
+                    last_trades = trades
 
     async def _run_fast_tick(self) -> None:
         """Institutional scanner — full market coarse + deep top 20 every 15s."""

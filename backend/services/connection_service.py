@@ -159,16 +159,23 @@ async def verify_connection(symbols: list[str] | None = None) -> ConnectionStatu
     elif _status.api_connected and not _status.symbols_ok:
         _status.live_market_data_status = "degraded"
 
-    # 3) WebSocket test
+    # 3) WebSocket — skip standalone probe when hub will own the single cluster socket.
+    # Opening a second connection here causes max_connections policy loops on Developer plans.
     if WEBSOCKET_ENABLED:
-        ws_ok, ws_msg = await test_websocket()
-        _status.websocket_available = ws_ok
-        if ws_ok:
+        if get_polygon_api_key():
+            _status.websocket_available = True
             _status.data_mode = "websocket"
-            _status.live_market_data_status = "live"
+            if _status.live_market_data_status != "live":
+                _status.live_market_data_status = "live"
         else:
-            _status.data_mode = "rest_polling"
-            _status.errors.append(f"WebSocket unavailable ({ws_msg}) — using REST polling")
+            ws_ok, ws_msg = await test_websocket()
+            _status.websocket_available = ws_ok
+            if ws_ok:
+                _status.data_mode = "websocket"
+                _status.live_market_data_status = "live"
+            else:
+                _status.data_mode = "rest_polling"
+                _status.errors.append(f"WebSocket unavailable ({ws_msg}) — using REST polling")
     else:
         _status.data_mode = "rest_polling"
 

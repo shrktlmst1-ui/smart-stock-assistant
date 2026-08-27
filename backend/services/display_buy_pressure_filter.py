@@ -10,6 +10,7 @@ from analysis.early_upward_surge import (
     relative_surge_from_signal,
 )
 from config import (
+    PREMOVE_DATA_MAX_AGE_SECONDS,
     PREMOVE_MIN_LIQUIDITY_SCORE,
     STAGE_BREAKOUT_NEAR_PCT,
     STAGE_EE_MAX_EXTENSION_PCT,
@@ -35,7 +36,7 @@ _EXCLUDED_PREMOVE = frozenset({
     "FAILED_SETUP",
 })
 
-_EARLY_STAGES = frozenset({"EARLY_WATCH", "PRE_BREAKOUT", "EARLY_ENTRY", "HIGH_CONVICTION_EARLY"})
+_EARLY_STAGES = frozenset({"EARLY_WATCH", "PRE_BREAKOUT", "EARLY_ENTRY", "HIGH_CONVICTION_EARLY", "REARMED", "CONFIRMED_ENTRY"})
 
 
 @dataclass
@@ -159,9 +160,42 @@ def _has_relative_surge(ctx: BuyPressureContext) -> bool:
     )
 
 
+def _passes_freshness_gate(sig: PreMoveSignal) -> bool:
+    """Minimal sanity for backend-confirmed display — no full re-analysis."""
+    if sig.current_price <= 0 or sig.current_price > 10.0:
+        return False
+    if sig.change_percent <= 0:
+        return False
+    if sig.data_age_seconds > PREMOVE_DATA_MAX_AGE_SECONDS:
+        return False
+    if sig.liquidity.spread_percent > STAGE_EE_MAX_SPREAD_PCT:
+        return False
+    if sig.liquidity.liquidity_score < PREMOVE_MIN_LIQUIDITY_SCORE:
+        return False
+    if sig.late_move.is_too_late and not sig.display_confirmed:
+        return False
+    return True
+
+
 def evaluate_premove_display(sig: PreMoveSignal) -> DisplayVerdict:
-    if sig.status in _EXCLUDED_PREMOVE or sig.late_move.is_too_late:
-        return DisplayVerdict(reject_reason=sig.status or "late_move")
+    if sig.display_confirmed and sig.display_type in (DISPLAY_STRONG_BUY_WATCH, DISPLAY_JUMP_ALERT):
+        if _passes_freshness_gate(sig):
+            ctx = context_from_premove(sig)
+            return DisplayVerdict(
+                show=True,
+                display_type=sig.display_type,
+                buy_pressure_score=sig.buy_pressure_score or fast_filter_surge_rank(
+                    sig.change_percent, _effective_rvol(ctx),
+                ),
+                confluence_count=sig.confluence_count,
+                confluence_factors=list(sig.confluence_factors),
+            )
+        return DisplayVerdict(reject_reason=sig.display_reject_reason or "stale_or_invalid")
+
+    if sig.status in _EXCLUDED_PREMOVE and not sig.display_confirmed:
+        return DisplayVerdict(reject_reason=sig.status or "excluded")
+    if sig.late_move.is_too_late and not sig.display_confirmed:
+        return DisplayVerdict(reject_reason="late_move")
     if sig.change_percent <= 0:
         return DisplayVerdict(reject_reason="no_upward_move")
     if sig.rejection_reason in ("TOO_LATE_TO_CHASE", "LOW_LIQUIDITY") and sig.status != "EARLY_ENTRY":
@@ -181,6 +215,16 @@ def evaluate_premove_display(sig: PreMoveSignal) -> DisplayVerdict:
             confluence_count=confluence,
             confluence_factors=factors,
         )
+
+    if sig.status == "CONFIRMED_ENTRY" or lifecycle == "BREAKOUT_CONFIRMED":
+        if surge and confluence >= max(4, STAGE_EE_MIN_CONFLUENCE - 1):
+            return DisplayVerdict(
+                show=True,
+                display_type=DISPLAY_STRONG_BUY_WATCH,
+                buy_pressure_score=buy_score,
+                confluence_count=confluence,
+                confluence_factors=factors,
+            )
 
     if lifecycle not in _EARLY_STAGES and sig.status not in _EARLY_STAGES:
         return DisplayVerdict(reject_reason="not_early_stage")

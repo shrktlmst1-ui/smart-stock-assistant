@@ -81,7 +81,7 @@ def update_stage_state(
             metrics.stage_progression_score,
         )
 
-        if new_stage in ("EARLY_WATCH", "PRE_BREAKOUT", "EARLY_ENTRY") and not state.first_detected_at:
+        if new_stage in ("EARLY_WATCH", "PRE_BREAKOUT", "EARLY_ENTRY", "REARMED") and not state.first_detected_at:
             state.first_detected_at = snap.timestamp
             state.first_detected_price = snap.price
 
@@ -92,6 +92,7 @@ def _stage_rank(stage: str) -> int:
     order = {
         "DISCOVERED": 0,
         "EARLY_WATCH": 1,
+        "REARMED": 1,
         "PRE_BREAKOUT": 2,
         "EARLY_ENTRY": 3,
         "BREAKOUT_CONFIRMED": 4,
@@ -116,6 +117,7 @@ def list_active_stage_symbols(*, min_stage: str = "EARLY_WATCH") -> list[str]:
     order = {
         "DISCOVERED": 0,
         "EARLY_WATCH": 1,
+        "REARMED": 1,
         "PRE_BREAKOUT": 2,
         "EARLY_ENTRY": 3,
         "BREAKOUT_CONFIRMED": 4,
@@ -130,6 +132,19 @@ def list_active_stage_symbols(*, min_stage: str = "EARLY_WATCH") -> list[str]:
             if order.get(state.current_stage, -1) >= min_rank:
                 out.append(state.symbol.upper())
     return out
+
+
+def list_pinned_deep_scan_symbols() -> list[str]:
+    """Keep fast-watch / re-armed symbols in deep scan even after FAILED_SETUP."""
+    now = time.time()
+    out: set[str] = set(list_active_stage_symbols(min_stage="EARLY_WATCH"))
+    with _lock:
+        for state in _store.values():
+            if now - state.last_updated > STAGE_STATE_TTL_SECONDS:
+                continue
+            if state.fast_watch_locked or state.current_stage in ("REARMED", "FAILED_SETUP", "PRE_BREAKOUT"):
+                out.add(state.symbol.upper())
+    return sorted(out)
 
 
 def reset_store() -> None:

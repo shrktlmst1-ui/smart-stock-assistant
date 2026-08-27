@@ -127,17 +127,23 @@ def _premove_to_opportunity_signal(sig: PreMoveSignal, *, session: str) -> Oppor
         stage_lifecycle=lifecycle,
         rvol=sig.volume.rvol,
         volume_acceleration=sig.volume.volume_acceleration_1m,
+        display_type=sig.display_type,
+        buy_pressure_score=sig.buy_pressure_score,
+        confluence_count=sig.confluence_count,
+        confluence_factors=list(sig.confluence_factors),
     )
 
 
 def _collect_home_display_signals(session: str) -> list[OpportunityNowSignal]:
-    """Strong real buying only — CRE/AIXI/WVVIP/BTCT-style confluence, not score-only."""
+    """Strong real buying only — backend-confirmed first, max 3 under $10."""
     from services.pre_move_predictor_service import get_last_pre_move_scan
 
     seen: set[str] = set()
     out: list[OpportunityNowSignal] = []
 
     for alert_sig in _collect_jump_alerts(session):
+        if alert_sig.price <= 0 or alert_sig.price > MAX_PRICE_USD or alert_sig.change_percent <= 0:
+            continue
         verdict = evaluate_jump_alert_display(alert_sig)
         if verdict.show:
             enriched = apply_display_verdict(alert_sig, verdict)
@@ -149,7 +155,18 @@ def _collect_home_display_signals(session: str) -> list[OpportunityNowSignal]:
     scan = get_last_pre_move_scan()
     if scan:
         for pm in scan.signals:
+            if pm.current_price <= 0 or pm.current_price > MAX_PRICE_USD or pm.change_percent <= 0:
+                continue
             base = _premove_to_opportunity_signal(pm, session=session)
+            if pm.display_confirmed and pm.display_type:
+                verdict = evaluate_premove_display(pm)
+                if verdict.show:
+                    enriched = apply_display_verdict(base, verdict)
+                    sym = enriched.symbol.upper()
+                    if sym not in seen:
+                        out.append(enriched)
+                        seen.add(sym)
+                continue
             verdict = evaluate_premove_display(pm)
             if not verdict.show:
                 continue
@@ -161,7 +178,7 @@ def _collect_home_display_signals(session: str) -> list[OpportunityNowSignal]:
             seen.add(sym)
 
     ext = _pick_extended_alert()
-    if ext:
+    if ext and ext.price > 0 and ext.price <= MAX_PRICE_USD and ext.change_percent > 0:
         verdict = evaluate_extended_gap_display(ext)
         if verdict.show:
             enriched = apply_display_verdict(ext, verdict)
@@ -179,7 +196,55 @@ def _collect_home_display_signals(session: str) -> list[OpportunityNowSignal]:
         ),
         reverse=True,
     )
-    return out
+    return out[:3]
+
+
+def collect_display_pipeline_stats(session: str) -> dict:
+    """Audit counters for live pipeline — WS → scan → display."""
+    from services.live_price_registry import live_price_registry
+    from services.pre_move_predictor_service import get_last_pre_move_scan
+    from services.stocks_ws_hub import stocks_ws_hub
+
+    scan = get_last_pre_move_scan()
+    display_out = _collect_home_display_signals(session)
+    rejects: dict[str, int] = {}
+
+    if scan:
+        for pm in scan.signals + scan.rejected:
+            v = evaluate_premove_display(pm)
+            if not v.show and pm.display_confirmed:
+                rejects["backend_confirmed_but_filter_blocked"] = rejects.get("backend_confirmed_but_filter_blocked", 0) + 1
+            elif not v.show:
+                key = v.reject_reason or "unknown"
+                rejects[key] = rejects.get(key, 0) + 1
+
+    stats = scan.stats if scan else None
+    strong = sum(1 for s in (scan.signals if scan else []) if s.display_type == DISPLAY_STRONG_BUY_WATCH)
+    jumps = sum(1 for s in (scan.signals if scan else []) if s.display_type == DISPLAY_JUMP_ALERT)
+    ew = sum(
+        1 for s in (scan.signals if scan else [])
+        if s.status == "EARLY_WATCH" or s.stage_progression.stage_lifecycle == "EARLY_WATCH"
+    )
+    pb = stats.pre_breakout if stats else 0
+    ee = stats.early_entry if stats else 0
+    too_late = stats.too_late if stats else 0
+
+    return {
+        "ws_connected": stocks_ws_hub.is_running,
+        "ws_trades_received": live_price_registry.status.trades_received,
+        "ws_symbols_with_ticks": len(live_price_registry.status.subscribed_symbols or []),
+        "candidates": stats.early_candidates if stats else 0,
+        "deep_analyzed": stats.deep_analyzed if stats else 0,
+        "early_watch": ew,
+        "pre_breakout": pb,
+        "strong_buy_watch_backend": strong,
+        "jump_qualified": ee,
+        "jump_alert_backend": jumps,
+        "too_late_to_chase": too_late,
+        "display_signals_shown": len(display_out),
+        "display_filter_rejects": rejects,
+        "top_reject_reasons": sorted(rejects.items(), key=lambda x: -x[1])[:5],
+    }
 
 
 def _collect_jump_alerts(session: str) -> list[OpportunityNowSignal]:

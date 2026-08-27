@@ -29,6 +29,7 @@ PreMoveLifecycle = Literal[
     "BREAKOUT_CONFIRMED",
     "TOO_LATE_TO_CHASE",
     "FAILED_SETUP",
+    "REARMED",
     "STOPPED",
     "TARGET1_HIT",
     "TARGET2_HIT",
@@ -222,6 +223,13 @@ class PreMoveSignal(BaseModel):
     data_age_seconds: float = 0.0
     lifecycle_history: list[PreMoveLifecycleEvent] = Field(default_factory=list)
     validated: bool = False
+    display_type: str = ""
+    display_confirmed: bool = False
+    fast_upward_path: bool = False
+    display_reject_reason: str = ""
+    buy_pressure_score: float = 0.0
+    confluence_count: int = 0
+    confluence_factors: list[str] = Field(default_factory=list)
 
 
 class PreMoveScanStats(BaseModel):

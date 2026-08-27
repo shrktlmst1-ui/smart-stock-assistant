@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from analysis.early_upward_surge import evaluate_fast_upward_jump
 from analysis.pre_move_breakout import compute_breakout_metrics
 from analysis.pre_move_compression import compute_compression_metrics
 from analysis.pre_move_early_activity import (
@@ -31,7 +32,7 @@ from services.pre_move_stage_store import create_replay_state
 from models.stock import NewsItem
 
 ET = ZoneInfo("America/New_York")
-MIN_BARS = 3
+MIN_BARS = 2
 
 
 def filter_premarket_regular(df: pd.DataFrame) -> pd.DataFrame:
@@ -146,7 +147,8 @@ def analyze_causal_bar(
     )
 
     failed = check_failed_setup(
-        window, early, base_price=base_price, price=price, had_early_watch=had_early_watch,
+        window, early, base_price=base_price, price=price,
+        had_early_watch=had_early_watch or stage_state.fast_watch_locked,
     )
 
     ts_iso = bar_ts.isoformat()
@@ -222,9 +224,30 @@ def analyze_causal_bar(
         stage_state.minutes_in_stage += 1.0
     stage_state.current_stage = lifecycle
     stage_state.peak_progression_score = max(stage_state.peak_progression_score, stage_metrics.stage_progression_score)
-    if lifecycle in ("EARLY_WATCH", "PRE_BREAKOUT", "EARLY_ENTRY") and not stage_state.first_detected_at:
+    if lifecycle in ("EARLY_WATCH", "PRE_BREAKOUT", "EARLY_ENTRY", "REARMED") and not stage_state.first_detected_at:
         stage_state.first_detected_at = ts_iso
         stage_state.first_detected_price = price
+
+    fast_verdict = evaluate_fast_upward_jump(
+        snap,
+        history=stage_state.history(),
+        bars=window,
+        lifecycle=lifecycle,
+        early_watch_locked=stage_state.fast_watch_locked,
+        for_jump_alert=lifecycle in ("EARLY_ENTRY", "BREAKOUT_CONFIRMED"),
+    )
+    if fast_verdict.qualified and not stage_state.fast_watch_locked:
+        stage_state.fast_watch_locked = True
+        stage_state.fast_watch_at = ts_iso
+        stage_state.fast_watch_price = price
+        stage_state.fast_watch_display_type = fast_verdict.display_type
+        if fast_verdict.reacceleration:
+            stage_state.reacceleration_count += 1
+    elif fast_verdict.qualified and fast_verdict.reacceleration:
+        stage_state.reacceleration_count += 1
+        stage_state.fast_watch_at = ts_iso
+        stage_state.fast_watch_price = price
+        stage_state.fast_watch_display_type = fast_verdict.display_type
 
     status = lifecycle_to_status(
         lifecycle,
@@ -297,6 +320,15 @@ def analyze_causal_bar(
         "activity_deviation": early.activity_deviation_score,
         "price_volume_response": early.price_volume_response,
         "breakdown": bd.model_dump(),
+        "display_type": fast_verdict.display_type if fast_verdict.qualified else "",
+        "display_confirmed": fast_verdict.qualified,
+        "fast_upward_path": fast_verdict.fast_upward_path,
+        "display_accept_reason": fast_verdict.accept_reason,
+        "display_reject_reason": fast_verdict.reject_reason,
+        "confluence_count": fast_verdict.confluence_count,
+        "confluence_factors": list(fast_verdict.confluence_factors),
+        "reacceleration": fast_verdict.reacceleration,
+        "soft_rvol_used": fast_verdict.soft_rvol_used,
     }
 
 
@@ -320,7 +352,9 @@ def replay_session(
     for i in range(MIN_BARS - 1, len(bars)):
         if timeline:
             peak_score = max(peak_score, timeline[-1]["score"])
-            if timeline[-1]["status"] == "EARLY_WATCH" or timeline[-1].get("lifecycle") == "EARLY_WATCH":
+            if timeline[-1]["status"] == "EARLY_WATCH" or timeline[-1].get("lifecycle") in (
+                "EARLY_WATCH", "REARMED", "PRE_BREAKOUT",
+            ):
                 had_watch = True
             if timeline[-1]["score"] >= peak_score:
                 peak_bar_idx = i - 1
