@@ -58,6 +58,16 @@ class OpportunityNowSignal {
   final List<String> confluenceFactors;
   final double rvol;
   final double volumeAcceleration;
+  // REAL_JUMP_ALERT wave KPI (display-only)
+  final double realJumpMoveStartPrice;
+  final String realJumpMoveStartTime;
+  final double realJumpCurrentMovePct;
+  final double realJumpFirstDetectedPrice;
+  final double realJumpFirstDetectedPct;
+  final String realJumpFirstDetectedTime;
+  final double realJumpWavePeakPrice;
+  final double realJumpWavePeakMovePct;
+  final double realJumpPeakAfterDetectionPct;
 
   const OpportunityNowSignal({
     required this.symbol,
@@ -113,6 +123,15 @@ class OpportunityNowSignal {
     this.confluenceFactors = const [],
     this.rvol = 0,
     this.volumeAcceleration = 0,
+    this.realJumpMoveStartPrice = 0,
+    this.realJumpMoveStartTime = '',
+    this.realJumpCurrentMovePct = 0,
+    this.realJumpFirstDetectedPrice = 0,
+    this.realJumpFirstDetectedPct = 0,
+    this.realJumpFirstDetectedTime = '',
+    this.realJumpWavePeakPrice = 0,
+    this.realJumpWavePeakMovePct = 0,
+    this.realJumpPeakAfterDetectionPct = 0,
   });
 
   factory OpportunityNowSignal.fromJson(Map<String, dynamic> json) {
@@ -178,6 +197,29 @@ class OpportunityNowSignal {
       rvol: (json['rvol'] as num?)?.toDouble() ?? 0,
       volumeAcceleration: (json['volume_acceleration'] as num?)?.toDouble() ??
           (json['volumeAcceleration'] as num?)?.toDouble() ??
+          0,
+      realJumpMoveStartPrice: (json['real_jump_move_start_price'] as num?)?.toDouble() ??
+          (json['realJumpMoveStartPrice'] as num?)?.toDouble() ??
+          0,
+      realJumpMoveStartTime: readJsonString(json, ['real_jump_move_start_time', 'realJumpMoveStartTime']),
+      realJumpCurrentMovePct: (json['real_jump_current_move_pct'] as num?)?.toDouble() ??
+          (json['realJumpCurrentMovePct'] as num?)?.toDouble() ??
+          0,
+      realJumpFirstDetectedPrice: (json['real_jump_first_detected_price'] as num?)?.toDouble() ??
+          (json['realJumpFirstDetectedPrice'] as num?)?.toDouble() ??
+          0,
+      realJumpFirstDetectedPct: (json['real_jump_first_detected_pct'] as num?)?.toDouble() ??
+          (json['realJumpFirstDetectedPct'] as num?)?.toDouble() ??
+          0,
+      realJumpFirstDetectedTime: readJsonString(json, ['real_jump_first_detected_time', 'realJumpFirstDetectedTime']),
+      realJumpWavePeakPrice: (json['real_jump_wave_peak_price'] as num?)?.toDouble() ??
+          (json['realJumpWavePeakPrice'] as num?)?.toDouble() ??
+          0,
+      realJumpWavePeakMovePct: (json['real_jump_wave_peak_move_pct'] as num?)?.toDouble() ??
+          (json['realJumpWavePeakMovePct'] as num?)?.toDouble() ??
+          0,
+      realJumpPeakAfterDetectionPct: (json['real_jump_peak_after_detection_pct'] as num?)?.toDouble() ??
+          (json['realJumpPeakAfterDetectionPct'] as num?)?.toDouble() ??
           0,
     );
   }
@@ -406,14 +448,14 @@ class OpportunityNowResponse {
     return out.take(limit).toList();
   }
 
-  /// REAL_JUMP_ALERT first, then existing STRONG_BUY_WATCH / JUMP_ALERT cards unchanged.
+  /// REAL_JUMP_ALERT first (no cap), then existing STRONG_BUY_WATCH / JUMP_ALERT cards unchanged.
   List<OpportunityNowSignal> jumpSectionItems({int limit = 3}) {
-    final real = realJumpAlerts.take(limit).toList();
+    final real = realJumpAlerts.toList();
     final seen = real.map((s) => s.symbol.toUpperCase()).toSet();
     final rest = confirmedJumps(limit: limit)
         .where((s) => !seen.contains(s.symbol.toUpperCase()))
         .toList();
-    final slots = limit - real.length;
+    final slots = limit > 0 ? (limit - real.length).clamp(0, limit) : rest.length;
     return [...real, ...rest.take(slots)];
   }
 

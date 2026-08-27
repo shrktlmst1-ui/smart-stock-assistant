@@ -24,11 +24,13 @@ from services.display_buy_pressure_filter import (
     evaluate_premove_display,
 )
 from services.real_jump_alert_layer import (
-    REAL_JUMP_MAX,
+    REAL_JUMP_EXPLOSIVE_WAVE_PCT,
     apply_real_jump_display,
+    eligible_for_price_jump_section,
     eligible_premove,
     evaluate_opportunity_real_jump,
     evaluate_premove_real_jump,
+    is_explosive_wave,
 )
 from services.jump_alert_registry import jump_alert_registry
 from services.jump_engine_monitor import jump_engine_monitor
@@ -224,7 +226,10 @@ def _collect_real_jump_alerts(session: str) -> list[OpportunityNowSignal]:
             if not eligible_premove(pm):
                 continue
             verdict = evaluate_premove_real_jump(pm)
-            if not verdict.confirmed:
+            wave = verdict.wave
+            if not verdict.confirmed or not wave or not eligible_for_price_jump_section(
+                verdict.kpi, current_move_pct=wave.current_move_pct,
+            ):
                 continue
             sym = pm.symbol.upper()
             if sym in seen:
@@ -241,13 +246,25 @@ def _collect_real_jump_alerts(session: str) -> list[OpportunityNowSignal]:
         if sym in seen:
             continue
         verdict = evaluate_opportunity_real_jump(base)
-        if not verdict.confirmed:
+        wave = verdict.wave
+        if not verdict.confirmed or not wave or not eligible_for_price_jump_section(
+            verdict.kpi, current_move_pct=wave.current_move_pct,
+        ):
             continue
         out.append(apply_real_jump_display(base, verdict))
         seen.add(sym)
 
-    out.sort(key=lambda s: (s.buy_pressure_score, s.confluence_count, s.score), reverse=True)
-    return out[:REAL_JUMP_MAX]
+    out.sort(
+        key=lambda s: (
+            is_explosive_wave(s.real_jump_current_move_pct),
+            s.real_jump_current_move_pct,
+            s.buy_pressure_score,
+            s.confluence_count,
+            s.score,
+        ),
+        reverse=True,
+    )
+    return out
 
 
 def collect_display_pipeline_stats(session: str) -> dict:

@@ -408,6 +408,7 @@ class RealJumpEarlyDetectionKPI:
     move_start_price: float = 0.0
     wave_peak_price: float = 0.0
     first_detected_pct: float = 0.0
+    wave_peak_move_pct: float = 0.0
     peak_after_detection_pct: float = 0.0
     lead_time_minutes: float = 0.0
     explosion_confluence_score: float = 0.0
@@ -426,10 +427,14 @@ class RealJumpWaveSnapshot:
     wave_peak_price: float = 0.0
     first_detected_time: datetime | None = None
     first_detected_price: float = 0.0
+    first_detected_pct: float = 0.0
+    current_price: float = 0.0
     wave_id: str = ""
     wave_active: bool = False
     wave_ended: bool = False
     is_new_wave: bool = False
+    wave_state: str = ""
+    reset_reason: str = ""
     kpi: RealJumpEarlyDetectionKPI | None = None
 
 
@@ -533,9 +538,14 @@ def derive_real_jump_wave(
         if prior and prior.wave_active and prior.move_start_price > 0:
             wave.move_start_price = prior.move_start_price
             wave.move_start_time = prior.move_start_time
+            wave.wave_state = prior.wave_state or "ACTIVE"
             wave.current_move_pct = (
                 (current_price - prior.move_start_price) / prior.move_start_price * 100.0
             )
+            wave.first_detected_time = prior.first_detected_time
+            wave.first_detected_price = prior.first_detected_price
+            wave.first_detected_pct = prior.first_detected_pct
+            wave.wave_id = prior.wave_id
         else:
             wave.move_start_price = move_start
             wave.move_start_time = start_time

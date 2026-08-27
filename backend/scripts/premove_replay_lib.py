@@ -235,6 +235,8 @@ def analyze_causal_bar(
         lifecycle=lifecycle,
         early_watch_locked=stage_state.fast_watch_locked,
         for_jump_alert=lifecycle in ("EARLY_ENTRY", "BREAKOUT_CONFIRMED"),
+        persistence_minutes=stage_metrics.persistence_minutes,
+        movement_start_price=stage_state.fast_watch_price or stage_state.first_detected_price,
     )
     if fast_verdict.qualified and not stage_state.fast_watch_locked:
         stage_state.fast_watch_locked = True

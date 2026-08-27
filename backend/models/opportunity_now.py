@@ -72,6 +72,16 @@ class OpportunityNowSignal(BaseModel):
     confluence_factors: list[str] = Field(default_factory=list)
     rvol: float = 0.0
     volume_acceleration: float = 0.0
+    # REAL_JUMP_ALERT wave KPI (display-only layer)
+    real_jump_move_start_price: float = 0.0
+    real_jump_move_start_time: str = ""
+    real_jump_current_move_pct: float = 0.0
+    real_jump_first_detected_price: float = 0.0
+    real_jump_first_detected_pct: float = 0.0
+    real_jump_first_detected_time: str = ""
+    real_jump_wave_peak_price: float = 0.0
+    real_jump_wave_peak_move_pct: float = 0.0
+    real_jump_peak_after_detection_pct: float = 0.0
 
 
 class OpportunityNowResponse(BaseModel):

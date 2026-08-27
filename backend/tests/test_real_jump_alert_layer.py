@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from analysis.early_upward_surge import DISPLAY_REAL_JUMP_ALERT, RealJumpWaveSnapshot, evaluate_real_jump_alert
+from analysis.early_upward_surge import DISPLAY_REAL_JUMP_ALERT, RealJumpEarlyDetectionKPI, RealJumpWaveSnapshot, evaluate_real_jump_alert
 from models.opportunity_now import OpportunityNowSignal
 from models.pre_move import (
     PreMoveEarlyActivityMetrics,
@@ -19,8 +19,13 @@ from services.display_buy_pressure_filter import (
     evaluate_premove_display,
 )
 from services.real_jump_alert_layer import (
+    REAL_JUMP_EXPLOSIVE_WAVE_PCT,
+    REAL_JUMP_SECTION_MIN_WAVE_PCT,
+    RealJumpAlertRegistry,
     apply_real_jump_display,
+    eligible_for_price_jump_section,
     evaluate_premove_real_jump,
+    is_explosive_wave,
     real_jump_wave_tracker,
     reset_real_jump_state,
 )
@@ -144,6 +149,9 @@ def test_real_jump_applies_real_jump_alert_display_type():
         verdict,
     )
     assert out.display_type == DISPLAY_REAL_JUMP_ALERT
+    assert out.status_ar == "REAL_JUMP_ALERT"
+    assert out.real_jump_move_start_price >= 0
+    assert out.real_jump_first_detected_time or out.real_jump_move_start_time
 
 
 def test_flat_or_down_rejected():
@@ -190,6 +198,58 @@ def test_reacceleration_allows_real_jump_alert():
         ),
     )
     assert v.confirmed is True
+
+
+def test_kpi_wave_peak_move_from_move_start_not_prev_close():
+    registry = RealJumpAlertRegistry()
+    wave = RealJumpWaveSnapshot(
+        move_start_price=2.0,
+        first_detected_price=2.5,
+        wave_peak_price=4.5,
+        wave_active=True,
+    )
+    from analysis.early_upward_surge import RealPriceJumpVerdict
+
+    kpi = registry._build_kpi(
+        wave,
+        RealPriceJumpVerdict(confirmed=True, explosion_confluence_score=0.7),
+        timestamp=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        current_price=4.5,
+    )
+    assert kpi.first_detected_pct == 25.0
+    assert kpi.wave_peak_move_pct == 125.0
+    assert kpi.peak_after_detection_pct == 80.0
+    assert eligible_for_price_jump_section(kpi, current_move_pct=125.0) is True
+
+
+def test_price_jump_section_blocked_below_100pct_wave():
+    assert eligible_for_price_jump_section(None, current_move_pct=50.0) is False
+    assert eligible_for_price_jump_section(None, current_move_pct=100.0) is True
+    assert is_explosive_wave(150.0) is True
+
+
+def test_explosive_badge_at_150pct_wave():
+    from analysis.early_upward_surge import RealPriceJumpVerdict
+
+    wave = RealJumpWaveSnapshot(move_start_price=1.0, wave_peak_price=2.6, wave_active=True)
+    registry = RealJumpAlertRegistry()
+    kpi = registry._build_kpi(
+        wave,
+        RealPriceJumpVerdict(confirmed=True, explosion_confluence_score=0.8),
+        timestamp=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        current_price=2.6,
+    )
+    assert kpi.wave_peak_move_pct >= 150.0
+    out = apply_real_jump_display(
+        OpportunityNowSignal(symbol="X", price=2.6, change_percent=160, score=90),
+        RealPriceJumpVerdict(confirmed=True, wave=wave, kpi=kpi),
+    )
+    wave.current_move_pct = 155.0
+    out2 = apply_real_jump_display(
+        OpportunityNowSignal(symbol="X", price=2.6, change_percent=160, score=90),
+        RealPriceJumpVerdict(confirmed=True, wave=wave, kpi=kpi),
+    )
+    assert out2.detection_stage == "EXPLOSIVE"
 
 
 def test_real_jump_layer_sorts_above_existing_cards():

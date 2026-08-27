@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/opportunity_now.dart';
 import '../theme/app_theme.dart';
 
-/// Watch jump card — CISS / ADIL / BTCT style (live confirmation engine).
+/// Watch jump card — STRONG_BUY_WATCH / JUMP_ALERT / REAL_JUMP_ALERT.
 class WatchJumpHomeCard extends StatelessWidget {
   final OpportunityNowSignal signal;
   final bool wsConnected;
@@ -16,23 +16,35 @@ class WatchJumpHomeCard extends StatelessWidget {
     this.onTap,
   });
 
+  static const _realJumpRed = Color(0xFFE53935);
+
   @override
   Widget build(BuildContext context) {
     final changePrefix = signal.changePercent >= 0 ? '+' : '';
-    final isJump = signal.isRealJumpAlertDisplay || signal.isJumpAlertDisplay || signal.isQualifiedJumpAlert;
-    final title = signal.isRealJumpAlertDisplay
-        ? 'قفزة سعرية حقيقية'
+    final isRealJump = signal.isRealJumpAlertDisplay;
+    final isJump = isRealJump || signal.isJumpAlertDisplay || signal.isQualifiedJumpAlert;
+    final title = isRealJump
+        ? 'قفزة سعرية لحظية'
         : isJump
             ? 'قفزة مؤكدة'
             : 'ضغط شراء قوي';
-    final subtitle = signal.isRealJumpAlertDisplay
-        ? 'REAL_JUMP_ALERT — حركة صاعدة حقيقية مؤكدة'
+    final subtitle = isRealJump
+        ? 'REAL_JUMP_ALERT'
         : isJump
             ? 'JUMP_ALERT — حركة صاعدة مؤكدة'
             : 'STRONG_BUY_WATCH — شراء قوي قبل الانفجار';
 
+    final cardColor = isRealJump ? _realJumpRed.withOpacity(0.12) : AppTheme.surface;
+    final borderColor = isRealJump ? _realJumpRed : Colors.transparent;
+    final accentColor = isRealJump ? _realJumpRed : AppTheme.primary;
+    final subtitleColor = isRealJump ? _realJumpRed : (isJump ? AppTheme.success : const Color(0xFFD29922));
+
     return Card(
-      color: AppTheme.surface,
+      color: cardColor,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: borderColor, width: isRealJump ? 1.5 : 0),
+      ),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
@@ -46,10 +58,14 @@ class WatchJumpHomeCard extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: AppTheme.primary.withOpacity(0.15),
+                      color: accentColor.withOpacity(0.15),
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Icon(Icons.visibility_outlined, color: AppTheme.primary, size: 26),
+                    child: Icon(
+                      isRealJump ? Icons.bolt : Icons.visibility_outlined,
+                      color: accentColor,
+                      size: 26,
+                    ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -58,7 +74,7 @@ class WatchJumpHomeCard extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
-                        color: AppTheme.textPrimary,
+                        color: isRealJump ? _realJumpRed : AppTheme.textPrimary,
                       ),
                     ),
                   ),
@@ -75,8 +91,8 @@ class WatchJumpHomeCard extends StatelessWidget {
                       ),
                       Text(
                         '\$${signal.price.toStringAsFixed(2)} ($changePrefix${signal.changePercent.toStringAsFixed(1)}%)',
-                        style: const TextStyle(
-                          color: AppTheme.primary,
+                        style: TextStyle(
+                          color: accentColor,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -88,11 +104,29 @@ class WatchJumpHomeCard extends StatelessWidget {
               Text(
                 subtitle,
                 style: TextStyle(
-                  color: isJump ? AppTheme.success : const Color(0xFFD29922),
+                  color: subtitleColor,
                   fontWeight: FontWeight.w600,
                   fontSize: 13,
                 ),
               ),
+              if (isRealJump) ...[
+                const SizedBox(height: 12),
+                if (signal.detectionStage == 'EXPLOSIVE')
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _realJumpRed.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: _realJumpRed),
+                    ),
+                    child: const Text(
+                      '+150% EXPLOSIVE',
+                      style: TextStyle(color: _realJumpRed, fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                  ),
+                _RealJumpKpiGrid(signal: signal),
+              ],
               if (signal.confluenceCount > 0) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -118,7 +152,7 @@ class WatchJumpHomeCard extends StatelessWidget {
                   if (signal.buyPressureScore > 0)
                     _Chip(
                       label: 'Buy ${signal.buyPressureScore.toStringAsFixed(0)}',
-                      color: AppTheme.primary,
+                      color: accentColor,
                     ),
                   if (signal.rvol > 0)
                     _Chip(label: 'RVOL ${signal.rvol.toStringAsFixed(1)}x', color: AppTheme.success),
@@ -127,25 +161,29 @@ class WatchJumpHomeCard extends StatelessWidget {
                       label: 'VolAcc ${signal.volumeAcceleration.toStringAsFixed(2)}',
                       color: AppTheme.success,
                     ),
-                  _Chip(label: 'Score ${signal.score.toStringAsFixed(0)}', color: AppTheme.primary),
-                  _Chip(
-                    label: '${signal.confirmedFactors}/${signal.totalFactors} Factors',
-                    color: AppTheme.success,
-                  ),
+                  if (!isRealJump) ...[
+                    _Chip(label: 'Score ${signal.score.toStringAsFixed(0)}', color: AppTheme.primary),
+                    _Chip(
+                      label: '${signal.confirmedFactors}/${signal.totalFactors} Factors',
+                      color: AppTheme.success,
+                    ),
+                  ],
                 ],
               ),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 12,
-                runSpacing: 4,
-                children: [
-                  _Meta('Entry', _entryLabel(signal)),
-                  _Meta('Stop', signal.stopLoss.toStringAsFixed(2)),
-                  _Meta('TP1', signal.target1.toStringAsFixed(2)),
-                  _Meta('TP2', signal.target2.toStringAsFixed(2)),
-                ],
-              ),
-              if (signal.reasonsAr.isNotEmpty) ...[
+              if (!isRealJump) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 4,
+                  children: [
+                    _Meta('Entry', _entryLabel(signal)),
+                    _Meta('Stop', signal.stopLoss.toStringAsFixed(2)),
+                    _Meta('TP1', signal.target1.toStringAsFixed(2)),
+                    _Meta('TP2', signal.target2.toStringAsFixed(2)),
+                  ],
+                ),
+              ],
+              if (signal.reasonsAr.isNotEmpty && !isRealJump) ...[
                 const SizedBox(height: 8),
                 Text(
                   'Reason Now: ${signal.reasonsAr.take(3).join(' • ')}',
@@ -182,6 +220,82 @@ class WatchJumpHomeCard extends StatelessWidget {
       return '${top.entryZoneLow.toStringAsFixed(2)}–${top.entryZoneHigh.toStringAsFixed(2)}';
     }
     return top.entryZone.toStringAsFixed(2);
+  }
+}
+
+class _RealJumpKpiGrid extends StatelessWidget {
+  final OpportunityNowSignal signal;
+
+  const _RealJumpKpiGrid({required this.signal});
+
+  @override
+  Widget build(BuildContext context) {
+    final moveStart = signal.realJumpMoveStartPrice;
+    final firstPrice = signal.realJumpFirstDetectedPrice;
+    final peak = signal.realJumpWavePeakPrice;
+    final currentMove = signal.realJumpCurrentMovePct;
+    final firstPct = signal.realJumpFirstDetectedPct;
+    final wavePeakMove = signal.realJumpWavePeakMovePct;
+    final peakAfter = signal.realJumpPeakAfterDetectionPct;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 16,
+          runSpacing: 6,
+          children: [
+            _Kpi('السعر الحالي', '\$${signal.price.toStringAsFixed(2)}'),
+            if (moveStart > 0) _Kpi('بداية الموجة', '\$${moveStart.toStringAsFixed(2)}'),
+            if (currentMove != 0) _Kpi('حركة الموجة', '+${currentMove.toStringAsFixed(2)}%'),
+            if (firstPrice > 0) _Kpi('سعر الاكتشاف', '\$${firstPrice.toStringAsFixed(2)}'),
+            if (firstPct != 0) _Kpi('عند الاكتشاف', '+${firstPct.toStringAsFixed(2)}%'),
+            if (peak > 0) _Kpi('أعلى بعد الاكتشاف', '\$${peak.toStringAsFixed(2)}'),
+            if (wavePeakMove > 0) _Kpi('ذروة الموجة', '+${wavePeakMove.toStringAsFixed(2)}%'),
+            if (peakAfter > 0) _Kpi('صعود بعد الاكتشاف', '+${peakAfter.toStringAsFixed(2)}%'),
+          ],
+        ),
+        if (signal.realJumpMoveStartTime.isNotEmpty || signal.realJumpFirstDetectedTime.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 16,
+            runSpacing: 4,
+            children: [
+              if (signal.realJumpMoveStartTime.isNotEmpty)
+                _Kpi('وقت بداية الموجة', _formatTime(signal.realJumpMoveStartTime)),
+              if (signal.realJumpFirstDetectedTime.isNotEmpty)
+                _Kpi('وقت الاكتشاف', _formatTime(signal.realJumpFirstDetectedTime)),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  String _formatTime(String iso) {
+    if (iso.length >= 16) {
+      return iso.substring(11, 16);
+    }
+    return iso;
+  }
+}
+
+class _Kpi extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _Kpi(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      '$label: $value',
+      style: const TextStyle(
+        color: AppTheme.textPrimary,
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+      ),
+    );
   }
 }
 

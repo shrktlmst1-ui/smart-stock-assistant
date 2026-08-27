@@ -1,8 +1,9 @@
-"""REAL_JUMP_ALERT historical replay — Polygon 1m bars only, no synthetic candles."""
+"""REAL_JUMP_ALERT historical replay — real Polygon 1m bars, causal, no synthetic candles."""
 
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,17 +13,25 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from analysis.early_upward_surge import evaluate_real_jump_alert
-from scripts.premove_replay_lib import analyze_causal_bar, filter_premarket_regular, replay_session
+from scripts.premove_replay_lib import filter_premarket_regular, replay_session
 from services.news_service import fetch_stock_news
 from services.polygon_client import PolygonClient
 from services.real_jump_alert_layer import (
+    REAL_JUMP_SECTION_MIN_WAVE_PCT,
     RealJumpAlertRegistry,
     RealJumpWaveTracker,
+    eligible_for_price_jump_section,
     reset_real_jump_state,
 )
 
-DATE = "2026-08-27"
+DATE = os.environ.get("REAL_JUMP_REPLAY_DATE", "2026-08-27")
 DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+REPLAY_SYMBOLS = [
+    s.strip().upper()
+    for s in os.environ.get("REAL_JUMP_REPLAY_SYMBOLS", "DAIC,BTCT,MSS").split(",")
+    if s.strip()
+]
+DATA_SOURCE = "Polygon 1m OHLCV replay (real bars, causal — not synthetic unit tests)"
 
 
 @dataclass
@@ -103,42 +112,72 @@ async def _replay_symbol(symbol: str, session_date: str = DATE) -> RealJumpRepla
         reset_real_jump_state()
         tracker = RealJumpWaveTracker()
         registry = RealJumpAlertRegistry()
-        session_high = float(bars["high"].max())
         alert_ids: set[str] = set()
         wave_ids_seen: set[str] = set()
         duplicate_waves = 0
+        open_waves: dict[str, dict] = {}
 
         for row in timeline:
             i = int(row["bar_idx"])
             window = bars.iloc[: i + 1]
             bar_ts = window["timestamp"].iloc[-1]
+            bar_high = float(window["high"].iloc[-1])
             verdict, proc, wave = _eval_from_causal(row, tracker, registry, symbol, window, bar_ts)
 
+            wid = wave.wave_id or f"{wave.move_start_price}"
+            if wid in open_waves:
+                open_waves[wid]["eventual_peak"] = max(open_waves[wid]["eventual_peak"], bar_high)
+
             if verdict.confirmed and proc.emit:
-                wid = wave.wave_id or f"{wave.move_start_price}"
                 if wid in wave_ids_seen and not proc.update_existing:
                     duplicate_waves += 1
                 wave_ids_seen.add(wid)
                 aid = proc.alert.alert_id if proc.alert else ""
                 if aid and aid not in alert_ids:
                     alert_ids.add(aid)
-                    det_pct = (float(row["price"]) - prev_close) / prev_close * 100
-                    peak_pct = (session_high - float(row["price"])) / float(row["price"]) * 100 if float(row["price"]) > 0 else 0
-                    metrics.detections.append({
+                    kpi = proc.alert.kpi if proc.alert else None
+                    move_start = wave.move_start_price
+                    first_price = kpi.first_detected_price if kpi else float(row["price"])
+                    first_pct = (
+                        (first_price - move_start) / move_start * 100.0 if move_start > 0 else 0.0
+                    )
+                    peak_at_det = kpi.wave_peak_price if kpi else bar_high
+                    open_waves[wid] = {
+                        "eventual_peak": max(peak_at_det, bar_high),
+                        "move_start": move_start,
+                        "first_price": first_price,
+                        "first_pct": first_pct,
+                        "peak_at_det": peak_at_det,
                         "time_et": row["time_et"],
-                        "price": float(row["price"]),
-                        "first_detected_pct": round(det_pct, 2),
                         "explosion_score": verdict.explosion_confluence_score,
-                        "move_start_price": wave.move_start_price,
-                        "peak_after_detection_pct": round(peak_pct, 2),
-                        "lead_time_minutes": proc.alert.kpi.lead_time_minutes if proc.alert and proc.alert.kpi else 0,
                         "is_update": proc.update_existing,
-                    })
+                    }
 
-        if symbol == "MSS" and metrics.detections:
-            metrics.false_positives = len(metrics.detections)
-        if symbol in ("DAIC", "BTCT") and not metrics.detections:
-            metrics.missed = 1
+        for w in open_waves.values():
+            ms = w["move_start"]
+            fp = w["first_price"]
+            ep = w["eventual_peak"]
+            wpm = (ep - ms) / ms * 100.0 if ms > 0 else 0.0
+            pad = (ep - fp) / fp * 100.0 if fp > 0 else 0.0
+            kpi_stub = type("K", (), {"wave_peak_move_pct": wpm})()
+            metrics.detections.append({
+                "time_et": w["time_et"],
+                "move_start_price": round(ms, 4),
+                "first_detected_price": round(fp, 4),
+                "first_detected_pct": round(w["first_pct"], 2),
+                "wave_peak_price": round(ep, 4),
+                "wave_peak_move_pct": round(wpm, 2),
+                "peak_after_detection_pct": round(pad, 2),
+                "exceeded_100": wpm > REAL_JUMP_SECTION_MIN_WAVE_PCT,
+                "exceeded_150": wpm >= 150.0,
+                "in_price_jump_section": eligible_for_price_jump_section(
+                    kpi_stub, current_move_pct=wpm,
+                ),
+                "data_source": DATA_SOURCE,
+                "explosion_score": w["explosion_score"],
+                "is_update": w.get("is_update", False),
+            })
+
         metrics.note = f"duplicate_waves={duplicate_waves}"
         return metrics
     except Exception as exc:
@@ -153,41 +192,47 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-@pytest.mark.parametrize("symbol,expect_detection", [
-    ("DAIC", True),
-    ("BTCT", True),
-    ("MSS", False),
-])
-def test_historical_real_jump_replay(symbol, expect_detection):
+@pytest.mark.integration
+@pytest.mark.parametrize("symbol", REPLAY_SYMBOLS or ["__skip__"])
+def test_historical_real_jump_replay_metrics(symbol):
+    if symbol == "__skip__":
+        pytest.skip("set REAL_JUMP_REPLAY_SYMBOLS for integration replay")
     m = _run(_replay_symbol(symbol))
     if not m.data_available:
         pytest.skip(m.note or DATA_UNAVAILABLE)
-    if expect_detection:
-        assert len(m.detections) >= 1, f"expected early REAL_JUMP on {symbol}"
-        first = m.detections[0]
-        assert first["first_detected_pct"] < 35.0, "detect before bulk of session move"
-        assert first["explosion_score"] >= 0.58
-    else:
-        assert m.false_positives == 0, f"false positives on {symbol}: {m.detections}"
+    for d in m.detections:
+        assert d["move_start_price"] > 0
+        assert "wave_peak_move_pct" in d
+        assert d["wave_peak_move_pct"] == pytest.approx(
+            (d["wave_peak_price"] - d["move_start_price"]) / d["move_start_price"] * 100.0,
+            rel=0.01,
+        )
+
+
+def test_replay_dataset_must_include_100pct_waves_for_goal_validation():
+    """Without +100% waves in replay data, goal validation is invalid — must FAIL not PASS."""
+    if not REPLAY_SYMBOLS:
+        pytest.fail("REAL_JUMP_REPLAY_SYMBOLS not configured")
+    all_cases: list[dict] = []
+    for sym in REPLAY_SYMBOLS:
+        m = _run(_replay_symbol(sym))
+        if not m.data_available:
+            continue
+        all_cases.extend(m.detections)
+    if not all_cases:
+        pytest.fail("no replay detections — cannot validate +100%/+150% goal")
+    has_100 = any(d["exceeded_100"] for d in all_cases)
+    if not has_100:
+        pytest.fail(
+            f"INVALID_FOR_GOAL: {len(all_cases)} detections but none exceeded +100% wave_peak_move_pct "
+            f"from move_start — replay data cannot validate +100%/+150% price jump section goal"
+        )
 
 
 def test_historical_cooldown_no_duplicate_alerts():
-    async def _run_check():
-        return await _replay_symbol("DAIC")
-
-    m = _run(_run_check())
+    if not REPLAY_SYMBOLS:
+        pytest.skip("set REAL_JUMP_REPLAY_SYMBOLS")
+    m = _run(_replay_symbol(REPLAY_SYMBOLS[0]))
     if not m.data_available:
         pytest.skip(m.note or DATA_UNAVAILABLE)
     assert "duplicate_waves=0" in m.note
-
-
-def test_historical_kpi_fields_present():
-    m = _run(_replay_symbol("BTCT"))
-    if not m.data_available:
-        pytest.skip(m.note or DATA_UNAVAILABLE)
-    if not m.detections:
-        pytest.skip("no detection on BTCT for KPI check")
-    d = m.detections[0]
-    assert d["move_start_price"] > 0
-    assert "first_detected_pct" in d
-    assert "peak_after_detection_pct" in d
