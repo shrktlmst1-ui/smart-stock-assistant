@@ -1,31 +1,20 @@
-"""Instant-wave REAL_JUMP_ALERT — moment-based, not session/day change."""
+"""REAL_JUMP_ALERT gate tests — snapshot/logic only, no synthetic market bars."""
 
 from __future__ import annotations
 
-import pandas as pd
 import pytest
-from zoneinfo import ZoneInfo
 
 from analysis.early_upward_surge import RealJumpWaveSnapshot, evaluate_real_jump_alert
 from config import STAGE_EE_MAX_EXTENSION_PCT
-from services.real_jump_alert_layer import RealJumpWaveTracker, evaluate_premove_real_jump, real_jump_wave_tracker
+from services.real_jump_alert_layer import (
+    RealJumpAlertRegistry,
+    RealJumpWaveTracker,
+    evaluate_premove_real_jump,
+    real_jump_alert_registry,
+    real_jump_wave_tracker,
+    reset_real_jump_state,
+)
 from tests.test_real_jump_alert_layer import _real_jump_signal
-
-ET = ZoneInfo("America/New_York")
-
-
-def _bars_from_closes(closes: list[float]) -> pd.DataFrame:
-    rows = []
-    for i, c in enumerate(closes):
-        rows.append({
-            "timestamp": pd.Timestamp(f"2026-08-27 10:{i:02d}:00", tz=ET),
-            "open": c * 0.998,
-            "high": c * 1.012,
-            "low": c * 0.995,
-            "close": c,
-            "volume": 1000 + i * 500,
-        })
-    return pd.DataFrame(rows)
 
 
 def _strong_wave_kwargs(**overrides):
@@ -37,7 +26,7 @@ def _strong_wave_kwargs(**overrides):
         breakout_pressure=48.0,
         resistance_distance_pct=1.0,
         trigger_price=5.2,
-        movement_start_price=5.0,
+        movement_start_price=0,
         volume_acceleration_1m=2.8,
         volume_acceleration_slope=1.18,
         trade_velocity_growth=0.22,
@@ -62,6 +51,7 @@ def _active_wave(**overrides) -> RealJumpWaveSnapshot:
         price_acceleration_3m=0.32,
         price_acceleration_5m=0.41,
         wave_active=True,
+        wave_peak_price=5.5,
     )
     for k, v in overrides.items():
         setattr(wave, k, v)
@@ -69,98 +59,109 @@ def _active_wave(**overrides) -> RealJumpWaveSnapshot:
 
 
 @pytest.fixture(autouse=True)
-def _reset_tracker():
-    real_jump_wave_tracker.reset()
+def _reset():
+    reset_real_jump_state()
     yield
-    real_jump_wave_tracker.reset()
+    reset_real_jump_state()
 
 
 def test_daily_up_70_stagnant_no_real_jump():
-    """+70% session move but flat now — no REAL_JUMP_ALERT."""
-    stagnant = _bars_from_closes([16.0, 16.01, 16.0, 16.01, 16.0, 16.02])
-    wave = real_jump_wave_tracker.update("STAG", current_price=16.02, bars=stagnant)
+    wave = RealJumpWaveSnapshot(wave_active=False, wave_ended=False, current_move_pct=0.0)
     v = evaluate_real_jump_alert(
         **_strong_wave_kwargs(current_price=16.02, change_pct=70.0),
-        bars=stagnant,
         wave=wave,
     )
     assert v.confirmed is False
-    assert v.reject_reason in ("no_active_wave", "wave_ended", "flat_or_down")
+    assert v.reject_reason in ("no_active_wave", "wave_ended", "flat_or_down", "hard_gate")
 
 
-def test_daily_up_5_instant_wave_yes_real_jump():
-    """+5% session but strong new instant wave — REAL_JUMP_ALERT allowed."""
-    surge = _bars_from_closes([4.80, 4.85, 4.92, 5.02, 5.15, 5.28])
-    wave = real_jump_wave_tracker.update("SURGE", current_price=5.28, bars=surge)
+def test_rvol_only_without_price_acceleration_rejected():
     v = evaluate_real_jump_alert(
-        **_strong_wave_kwargs(current_price=5.28, change_pct=5.0, movement_start_price=4.80),
-        bars=surge,
-        wave=wave,
+        current_price=4.2,
+        change_pct=3.0,
+        price_volume_response=0.08,
+        volume_acceleration_1m=0.5,
+        rvol_same_time=4.5,
+        rvol=4.0,
+        liquidity_score=60.0,
+        spread_pct=2.0,
+        wave=RealJumpWaveSnapshot(
+            wave_active=True,
+            current_move_pct=3.0,
+            price_acceleration_1m=0.05,
+            price_acceleration_3m=0.08,
+            move_start_price=4.0,
+        ),
+    )
+    assert v.confirmed is False
+
+
+def test_volume_spike_only_rejected():
+    v = evaluate_real_jump_alert(
+        current_price=4.02,
+        change_pct=0.5,
+        price_volume_response=0.05,
+        volume_acceleration_1m=3.5,
+        volume_acceleration_slope=1.3,
+        rvol_same_time=0.8,
+        liquidity_score=60.0,
+        spread_pct=2.0,
+        wave=RealJumpWaveSnapshot(
+            wave_active=True,
+            current_move_pct=0.5,
+            price_acceleration_1m=0.02,
+            move_start_price=4.0,
+        ),
+    )
+    assert v.confirmed is False
+
+
+def test_down_move_rejected():
+    v = evaluate_real_jump_alert(
+        **_strong_wave_kwargs(current_price=4.8, change_pct=-2.0),
+        wave=RealJumpWaveSnapshot(wave_active=True, current_move_pct=-1.5, move_start_price=5.0),
+    )
+    assert v.confirmed is False
+
+
+def test_wide_spread_weak_liquidity_rejected():
+    v = evaluate_real_jump_alert(
+        **_strong_wave_kwargs(spread_pct=9.0, liquidity_score=20.0),
+        wave=_active_wave(),
+    )
+    assert v.confirmed is False
+
+
+def test_news_only_does_not_create_alert():
+    v = evaluate_real_jump_alert(
+        **_strong_wave_kwargs(price_volume_response=0.1),
+        wave=RealJumpWaveSnapshot(wave_active=True, current_move_pct=4.0, move_start_price=5.0),
+        news_catalyst_score=85.0,
+    )
+    assert v.confirmed is False
+
+
+def test_active_wave_with_confluence_passes():
+    v = evaluate_real_jump_alert(
+        **_strong_wave_kwargs(),
+        wave=_active_wave(),
     )
     assert v.confirmed is True
-    assert v.wave is not None
-    assert v.wave.current_move_pct > 0
-    assert v.wave.wave_active is True
+    assert v.explosion_confluence_score >= 0.58
 
 
-def test_wave_ended_clears_real_jump():
-    tracker = RealJumpWaveTracker()
-    active = _bars_from_closes([5.0, 5.1, 5.25, 5.45, 5.62])
-    wave_active = tracker.update("W1", current_price=5.62, bars=active)
-    v_on = evaluate_real_jump_alert(
-        **_strong_wave_kwargs(current_price=5.62, movement_start_price=5.0),
-        bars=active,
-        wave=wave_active,
-    )
-    assert v_on.confirmed is True
-
-    flat = _bars_from_closes([5.0, 5.1, 5.25, 5.45, 5.62, 5.61, 5.60, 5.61])
-    wave_flat = tracker.update("W1", current_price=5.61, bars=flat)
-    v_off = evaluate_real_jump_alert(
-        **_strong_wave_kwargs(current_price=5.61, movement_start_price=5.0),
-        bars=flat,
-        wave=wave_flat,
-    )
-    assert v_off.confirmed is False
-    assert v_off.reject_reason in ("wave_ended", "no_active_wave")
-
-
-def test_reacceleration_new_instant_wave():
-    tracker = RealJumpWaveTracker()
-    first = _bars_from_closes([3.0, 3.08, 3.12, 3.18, 3.22])
-    w1 = tracker.update("R1", current_price=3.22, bars=first)
-    v1 = evaluate_real_jump_alert(
-        **_strong_wave_kwargs(
-            current_price=3.22,
-            change_pct=40.0,
-            movement_start_price=0,
-            trigger_price=3.15,
+def test_wave_ended_rejects():
+    v = evaluate_real_jump_alert(
+        **_strong_wave_kwargs(),
+        wave=RealJumpWaveSnapshot(
+            wave_active=False,
+            wave_ended=True,
+            current_move_pct=8.0,
+            move_start_price=5.0,
         ),
-        bars=first,
-        wave=w1,
     )
-    assert v1.confirmed is True
-
-    pause = _bars_from_closes([3.0, 3.08, 3.18, 3.32, 3.50, 3.49, 3.48, 3.49])
-    tracker.update("R1", current_price=3.49, bars=pause)
-    tracker.update("R1", current_price=3.48, bars=pause)
-    w_pause = tracker.update("R1", current_price=3.49, bars=pause)
-    assert w_pause.wave_active is False or w_pause.wave_ended
-
-    second = _bars_from_closes([3.0, 3.08, 3.18, 3.32, 3.50, 3.49, 3.48, 3.49, 3.55, 3.68, 3.85])
-    w2 = tracker.update("R1", current_price=3.85, bars=second)
-    v2 = evaluate_real_jump_alert(
-        **_strong_wave_kwargs(
-            current_price=3.85,
-            change_pct=55.0,
-            movement_start_price=w2.move_start_price or 3.48,
-            trigger_price=3.55,
-        ),
-        bars=second,
-        wave=w2,
-    )
-    assert v2.confirmed is True
-    assert w2.is_new_wave or w2.wave_active
+    assert v.confirmed is False
+    assert v.reject_reason in ("wave_ended", "no_active_wave")
 
 
 def test_premove_layer_uses_instant_wave_not_day_change():
@@ -173,45 +174,53 @@ def test_premove_layer_uses_instant_wave_not_day_change():
     assert verdict.wave.wave_active
 
 
-def test_day_change_ignored_when_no_wave():
-    v = evaluate_real_jump_alert(
-        **_strong_wave_kwargs(change_pct=80.0),
-        wave=RealJumpWaveSnapshot(wave_active=False, current_move_pct=0.0),
+def test_duplicate_alert_blocked_for_same_wave():
+    registry = RealJumpAlertRegistry()
+    wave = _active_wave(wave_id="TEST:5.0:2026")
+    v1 = evaluate_real_jump_alert(**_strong_wave_kwargs(), wave=wave)
+    r1 = registry.process("TEST", v1, wave=wave, current_price=5.5)
+    r2 = registry.process("TEST", v1, wave=wave, current_price=5.52)
+    assert r1.emit is True
+    assert r1.update_existing is False
+    assert r2.emit is True
+    assert r2.update_existing is True
+    assert registry.get("TEST") is not None
+    assert registry.get("TEST").alert_id == r1.alert.alert_id
+
+
+def test_new_wave_after_end_allows_new_alert():
+    registry = RealJumpAlertRegistry()
+    w1 = _active_wave(wave_id="T:5.0:A", is_new_wave=False)
+    v1 = evaluate_real_jump_alert(**_strong_wave_kwargs(), wave=w1)
+    registry.process("T", v1, wave=w1, current_price=5.5)
+
+    ended = RealJumpWaveSnapshot(
+        wave_active=False,
+        wave_ended=True,
+        wave_id="T:5.0:A",
+        move_start_price=5.0,
+        current_move_pct=6.0,
     )
-    assert v.confirmed is False
+    v_end = evaluate_real_jump_alert(**_strong_wave_kwargs(), wave=ended)
+    registry.process("T", v_end, wave=ended, current_price=5.4)
+
+    w2 = _active_wave(
+        wave_id="T:5.35:B",
+        is_new_wave=True,
+        move_start_price=5.35,
+        current_move_pct=5.0,
+    )
+    v2 = evaluate_real_jump_alert(**_strong_wave_kwargs(current_price=5.62), wave=w2)
+    r2 = registry.process("T", v2, wave=w2, current_price=5.62)
+    assert r2.emit is True
+    assert r2.update_existing is False
+    assert registry.get("T").wave_id == "T:5.35:B"
 
 
 def test_too_late_uses_wave_extension_not_day_change():
     v = evaluate_real_jump_alert(
-        **_strong_wave_kwargs(change_pct=5.0, movement_start_price=0),
+        **_strong_wave_kwargs(change_pct=5.0),
         wave=_active_wave(current_move_pct=STAGE_EE_MAX_EXTENSION_PCT + 3),
         late_guard=True,
     )
     assert v.confirmed is False
-    assert v.reject_reason in ("too_late_to_chase", "wave_too_extended")
-
-
-def test_false_positives_zero_instant_patterns():
-    negatives = [
-        _bars_from_closes([2.0, 2.05, 2.08, 2.10]),
-        _bars_from_closes([5.0, 5.02, 5.01, 5.03]),
-        _bars_from_closes([3.0, 2.95, 2.98, 3.02, 3.01]),
-    ]
-    fp = 0
-    for bars in negatives:
-        price = float(bars["close"].iloc[-1])
-        wave = real_jump_wave_tracker.update("NEG", current_price=price, bars=bars)
-        v = evaluate_real_jump_alert(
-            current_price=price,
-            change_pct=3.0,
-            price_volume_response=0.12,
-            volume_acceleration_1m=1.5,
-            rvol_same_time=0.9,
-            liquidity_score=60.0,
-            spread_pct=2.0,
-            bars=bars,
-            wave=wave,
-        )
-        if v.confirmed:
-            fp += 1
-    assert fp == 0

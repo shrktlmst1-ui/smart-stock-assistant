@@ -20,6 +20,12 @@ from config import (
     STAGE_VOL_ACCEL_MIN,
     STAGE_VOL_ACCEL_STRONG,
 )
+from analysis.real_jump_confluence import (
+    CONFLUENCE_PASS_THRESHOLD,
+    RealJumpBonusContext,
+    compute_explosion_confluence,
+    near_psychological_level,
+)
 from models.pre_move import PreMoveSignal
 from models.pre_move_stage import StageSnapshot
 
@@ -396,6 +402,18 @@ WAVE_NEW_ACCEL_3M = 0.22
 
 
 @dataclass
+class RealJumpEarlyDetectionKPI:
+    first_detected_time: datetime | None = None
+    first_detected_price: float = 0.0
+    move_start_price: float = 0.0
+    wave_peak_price: float = 0.0
+    first_detected_pct: float = 0.0
+    peak_after_detection_pct: float = 0.0
+    lead_time_minutes: float = 0.0
+    explosion_confluence_score: float = 0.0
+
+
+@dataclass
 class RealJumpWaveSnapshot:
     """Short-window upward wave — independent of session/day change."""
 
@@ -405,9 +423,14 @@ class RealJumpWaveSnapshot:
     price_acceleration_1m: float = 0.0
     price_acceleration_3m: float = 0.0
     price_acceleration_5m: float = 0.0
+    wave_peak_price: float = 0.0
+    first_detected_time: datetime | None = None
+    first_detected_price: float = 0.0
+    wave_id: str = ""
     wave_active: bool = False
     wave_ended: bool = False
     is_new_wave: bool = False
+    kpi: RealJumpEarlyDetectionKPI | None = None
 
 
 @dataclass
@@ -416,7 +439,12 @@ class RealPriceJumpVerdict:
     reject_reason: str = ""
     evidence_factors: list[str] = field(default_factory=list)
     explosive_score: int = 0
+    explosion_confluence_score: float = 0.0
+    confluence_components: dict[str, float] = field(default_factory=dict)
+    bonus_factors: list[str] = field(default_factory=list)
     wave: RealJumpWaveSnapshot | None = None
+    kpi: RealJumpEarlyDetectionKPI | None = None
+    is_alert_update: bool = False
 
 
 def _wave_has_upward_momentum(acc_1m: float, acc_3m: float, acc_5m: float) -> bool:
@@ -786,6 +814,10 @@ def evaluate_real_jump_alert(
     bars: pd.DataFrame | None = None,
     reacceleration: bool = False,
     wave: RealJumpWaveSnapshot | None = None,
+    float_shares: float = 0.0,
+    news_catalyst_score: float = 0.0,
+    premarket_gap_pct: float = 0.0,
+    catalyst_strength: float = 0.0,
 ) -> RealPriceJumpVerdict:
     """
     REAL_JUMP_ALERT — instant upward wave fingerprint (1m/3m/5m), not session/day change.
@@ -823,6 +855,9 @@ def evaluate_real_jump_alert(
         return out
     if move_pct <= 0 and not reacceleration:
         out.reject_reason = "flat_or_down"
+        return out
+    if change_pct < -1.0 and move_pct < 8.0:
+        out.reject_reason = "session_down_weak_bounce"
         return out
     if late_guard and move_pct >= STAGE_EE_MAX_EXTENSION_PCT:
         out.reject_reason = "too_late_to_chase"
@@ -966,26 +1001,63 @@ def evaluate_real_jump_alert(
         "micro_resistance": micro_resistance,
     }
 
+    bonus_ctx = RealJumpBonusContext(
+        float_shares=float_shares,
+        news_catalyst_score=news_catalyst_score,
+        premarket_gap_pct=premarket_gap_pct,
+        near_psychological_level=near_psychological_level(current_price),
+        catalyst_strength=catalyst_strength or (news_catalyst_score / 100.0 if news_catalyst_score else 0.0),
+    )
+    confluence = compute_explosion_confluence(
+        price_acceleration_ok=price_strong,
+        acc_1m=active_wave.price_acceleration_1m,
+        acc_3m=active_wave.price_acceleration_3m,
+        acc_5m=active_wave.price_acceleration_5m,
+        breakout_ok=breakout,
+        multi_tick_ok=multi_tick,
+        volume_acceleration_1m=volume_acceleration_1m,
+        volume_acceleration_slope=volume_acceleration_slope,
+        trade_velocity_growth=trade_velocity_growth,
+        trade_velocity=trade_velocity,
+        price_volume_response=price_volume_response,
+        dollar_volume_growth=dollar_volume_growth,
+        rvol=rvol,
+        rvol_same_time=rvol_same_time,
+        liquidity_score=liquidity_score,
+        spread_pct=spread_pct,
+        range_compression_3m=range_compression_3m,
+        bonus=bonus_ctx,
+    )
+
+    out.explosion_confluence_score = confluence.total_score
+    out.confluence_components = confluence.component_scores
+    out.bonus_factors = confluence.bonus_factors
     out.evidence_factors = [k for k, ok in checks.items() if ok]
     out.evidence_factors.extend(k for k, ok in optional.items() if ok)
     out.evidence_factors.extend(price_factors)
+    out.evidence_factors.extend(
+        f"confluence_{k}:{v:.2f}" for k, v in confluence.component_scores.items() if v >= 0.5
+    )
+    out.evidence_factors.extend(confluence.bonus_factors)
     if active_wave.is_new_wave:
         out.evidence_factors.append("new_instant_wave")
-    out.explosive_score = sum(checks.values()) + sum(optional.values())
+    out.explosive_score = int(round(confluence.total_score * 100))
 
-    required_missing = [k for k, ok in checks.items() if not ok]
-    min_core = 8
-    if not price_strong:
-        out.reject_reason = "weak_price_acceleration"
+    if not confluence.hard_gate_pass:
+        missing = [k for k, ok in confluence.hard_gates.items() if not ok]
+        out.reject_reason = f"hard_gate_{'_'.join(missing)}"
         return out
-    if out.explosive_score < min_core + 1:
-        out.reject_reason = f"missing_{'_'.join(required_missing)}"
+    if confluence.total_score < CONFLUENCE_PASS_THRESHOLD:
+        out.reject_reason = f"confluence_{confluence.total_score:.2f}<{CONFLUENCE_PASS_THRESHOLD}"
         return out
-    if not price_expansion or not breakout or not multi_tick:
-        out.reject_reason = f"missing_{'_'.join(required_missing)}"
+    if not price_expansion or not vol_accel_ok or not rvol_st_ok or not trade_vel_ok or not buy_pressure_ok:
+        out.reject_reason = "missing_core_explosion_factors"
         return out
-    if not vol_accel_ok or not rvol_st_ok or not trade_vel_ok or not buy_pressure_ok:
-        out.reject_reason = f"missing_{'_'.join(required_missing)}"
+    if news_catalyst_score >= 40 and not price_strong:
+        out.reject_reason = "news_only"
+        return out
+    if premarket_gap_pct >= 5.0 and not price_strong and not breakout:
+        out.reject_reason = "gap_only"
         return out
 
     out.confirmed = True

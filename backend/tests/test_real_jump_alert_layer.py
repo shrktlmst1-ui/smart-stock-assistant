@@ -22,6 +22,7 @@ from services.real_jump_alert_layer import (
     apply_real_jump_display,
     evaluate_premove_real_jump,
     real_jump_wave_tracker,
+    reset_real_jump_state,
 )
 
 
@@ -108,11 +109,12 @@ def _volume_only_signal(**overrides) -> PreMoveSignal:
 
 
 def test_real_jump_qualifies_for_real_jump_alert_layer():
-    real_jump_wave_tracker.reset()
+    reset_real_jump_state()
     for p in [5.1, 5.25, 5.38, 5.5]:
         real_jump_wave_tracker.update("RJ", current_price=p)
     verdict = evaluate_premove_real_jump(_real_jump_signal())
     assert verdict.confirmed is True
+    assert verdict.explosion_confluence_score >= 0.58
 
 
 def test_volume_only_no_real_jump_alert():
