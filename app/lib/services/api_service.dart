@@ -215,22 +215,36 @@ class ApiService {
   }
 
   Future<MarketPulseHealth> fetchMarketPulseHealth() async {
+    return (await fetchMarketPulseHealthPayload()).data;
+  }
+
+  Future<ApiRawPayload<MarketPulseHealth>> fetchMarketPulseHealthPayload() async {
     final response = await _get('/market-pulse/health').timeout(const Duration(seconds: 12));
     if (response.statusCode != 200) {
       throw Exception('فشل حالة نبض السوق');
     }
-    return MarketPulseHealth.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    final raw = jsonDecode(response.body) as Map<String, dynamic>;
+    return ApiRawPayload(data: MarketPulseHealth.fromJson(raw), raw: raw);
   }
 
   Future<MarketPulseListResponse> fetchMarketPulseAlerts() async {
+    return (await fetchMarketPulseAlertsPayload()).data;
+  }
+
+  Future<ApiRawPayload<MarketPulseListResponse>> fetchMarketPulseAlertsPayload() async {
     final response = await _get('/market-pulse').timeout(const Duration(seconds: 12));
     if (response.statusCode != 200) {
       throw Exception('فشل تحميل نبض السوق');
     }
-    return MarketPulseListResponse.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    final raw = jsonDecode(response.body) as Map<String, dynamic>;
+    return ApiRawPayload(data: MarketPulseListResponse.fromJson(raw), raw: raw);
   }
 
   Future<OpportunityNowResponse> fetchOpportunityNow() async {
+    return (await fetchOpportunityNowPayload()).data;
+  }
+
+  Future<ApiRawPayload<OpportunityNowResponse>> fetchOpportunityNowPayload() async {
     final response = await _get('/stocks/opportunity-now').timeout(const Duration(seconds: 12));
     if (response.statusCode == 401) {
       throw Exception('انتهت الجلسة — سجّل الدخول مجددًا');
@@ -238,9 +252,8 @@ class ApiService {
     if (response.statusCode != 200) {
       throw Exception('فشل تحميل فرصة الآن');
     }
-    return OpportunityNowResponse.fromJson(
-      jsonDecode(response.body) as Map<String, dynamic>,
-    );
+    final raw = jsonDecode(response.body) as Map<String, dynamic>;
+    return ApiRawPayload(data: OpportunityNowResponse.fromJson(raw), raw: raw);
   }
 
   Future<SystemStatus> fetchSystemStatus() async {
@@ -259,4 +272,12 @@ class ApiService {
       scanner: scanner,
     );
   }
+}
+
+/// Parsed API entity plus raw JSON for offline/cache restore.
+class ApiRawPayload<T> {
+  final T data;
+  final Map<String, dynamic> raw;
+
+  const ApiRawPayload({required this.data, required this.raw});
 }

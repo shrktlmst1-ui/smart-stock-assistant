@@ -8,6 +8,7 @@ import '../models/market_pulse.dart';
 import '../models/opportunity_now.dart';
 import '../services/api_service.dart';
 import '../services/app_state.dart';
+import '../services/home_screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../widgets/jump_section.dart';
 import '../widgets/market_pulse_card.dart';
@@ -21,30 +22,107 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   MarketPulseListResponse? _pulseListing;
   OpportunityNowResponse? _opportunityNow;
   PulseServiceState _pulseState = PulseServiceState.loading;
-  bool _loading = true;
   bool _opportunityLoading = true;
   String? _opportunityError;
   Timer? _liveTimer;
+  Timer? _resumeDebounce;
+  DateTime? _lastSuccessfulFetch;
+  bool _refreshInFlight = false;
+  bool _bootstrapComplete = false;
 
   static const _pollSeconds = 12;
+  static const _resumeDebounceMs = 600;
+  static const _minResumeRefreshGap = Duration(seconds: 4);
 
   ApiService get _api => context.read<AppState>().api;
+
+  bool get _hasCachedOpportunity =>
+      _opportunityNow != null || (HomeScreenCache.memorySnapshot?.opportunity != null);
 
   @override
   void initState() {
     super.initState();
-    _load();
-    _liveTimer = Timer.periodic(const Duration(seconds: _pollSeconds), (_) => _refreshLive());
+    WidgetsBinding.instance.addObserver(this);
+    _restoreCachedSnapshotSync();
+    _bootstrap();
+    _liveTimer = Timer.periodic(const Duration(seconds: _pollSeconds), (_) => _refreshAll(background: true));
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _liveTimer?.cancel();
+    _resumeDebounce?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _scheduleResumeRefresh();
+    }
+  }
+
+  void _restoreCachedSnapshotSync() {
+    final cached = HomeScreenCache.memorySnapshot;
+    if (cached != null) {
+      _applyCachedSnapshot(cached);
+    }
+  }
+
+  Future<void> _bootstrap() async {
+    final cached = await HomeScreenCache.load();
+    if (cached != null && mounted) {
+      _applyCachedSnapshot(cached);
+    }
+    await _refreshAll(background: _hasCachedOpportunity);
+    if (mounted) {
+      setState(() => _bootstrapComplete = true);
+    }
+  }
+
+  void _applyCachedSnapshot(HomeCachedSnapshot cached) {
+    HomeScreenCache.seedMemory(cached);
+    if (_lastSuccessfulFetch != null && cached.fetchedAt.isBefore(_lastSuccessfulFetch!)) {
+      return;
+    }
+    _lastSuccessfulFetch = cached.fetchedAt;
+
+    final opp = cached.opportunity;
+    if (opp != null) {
+      _opportunityNow = opp;
+      _opportunityLoading = false;
+      _opportunityError = null;
+    }
+
+    final pulseList = cached.pulseList;
+    if (pulseList != null) {
+      _pulseListing = pulseList;
+      final health = cached.pulseHealth;
+      if (health != null) {
+        _pulseState = _derivePulseState(pulseList, health);
+      } else if (_pulseState == PulseServiceState.loading) {
+        _pulseState = pulseList.alerts.isEmpty ? PulseServiceState.empty : PulseServiceState.delayed;
+      }
+    }
+
+    if (mounted) setState(() {});
+  }
+
+  void _scheduleResumeRefresh() {
+    _resumeDebounce?.cancel();
+    _resumeDebounce = Timer(const Duration(milliseconds: _resumeDebounceMs), () {
+      if (!mounted || _refreshInFlight) return;
+      final last = _lastSuccessfulFetch;
+      if (last != null && DateTime.now().difference(last) < _minResumeRefreshGap) {
+        return;
+      }
+      _refreshAll(background: true);
+    });
   }
 
   List<MarketPulseAlert> get _validPulseAlerts {
@@ -53,98 +131,98 @@ class _HomeScreenState extends State<HomeScreen> {
         .toList();
   }
 
-  Future<void> _refreshLive() async {
-    if (!mounted || _loading) return;
-    try {
-      final results = await Future.wait([
-        _api.fetchOpportunityNow(),
-        _api.fetchMarketPulseAlerts(),
-        _api.fetchMarketPulseHealth(),
-      ]);
-      final opp = results[0] as OpportunityNowResponse;
-      final pulseList = results[1] as MarketPulseListResponse;
-      final pulseHealth = results[2] as MarketPulseHealth;
-      if (mounted) {
-        setState(() {
-          _opportunityNow = opp;
-          _pulseListing = pulseList;
-          _pulseState = _derivePulseState(pulseList, pulseHealth);
-          _opportunityError = null;
-          _opportunityLoading = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _opportunityError = _friendlyError(e);
-          _opportunityLoading = false;
-        });
-      }
-    }
-  }
+  Future<void> _refreshAll({bool background = false}) async {
+    if (_refreshInFlight) return;
+    _refreshInFlight = true;
+    final fetchedAt = DateTime.now();
 
-  Future<void> _loadOpportunityNow() async {
-    if (mounted) setState(() => _opportunityLoading = true);
-    try {
-      final opp = await _api.fetchOpportunityNow();
-      if (mounted) {
-        setState(() {
-          _opportunityNow = opp;
-          _opportunityError = null;
-          _opportunityLoading = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _opportunityError = _friendlyError(e);
-          _opportunityLoading = false;
-        });
-      }
+    if (!background && !_hasCachedOpportunity && mounted) {
+      setState(() => _opportunityLoading = true);
     }
-  }
 
-  Future<void> _load({bool backgroundRefresh = false}) async {
-    setState(() {
-      _loading = false;
-      _pulseState = PulseServiceState.loading;
-    });
+    Map<String, dynamic>? oppRaw;
+    Map<String, dynamic>? pulseListRaw;
+    Map<String, dynamic>? pulseHealthRaw;
+    OpportunityNowResponse? opp;
+    MarketPulseListResponse? pulseList;
+    MarketPulseHealth? pulseHealth;
+    String? pulseError;
+    String? oppError;
+
     try {
-      var pulseList = const MarketPulseListResponse(enabled: false, alerts: [], count: 0);
-      var pulseHealth = const MarketPulseHealth(
-        enabled: false,
-        status: 'disabled',
-        hasApiKey: false,
-        subscribedSymbols: 0,
-        maxSymbols: 50,
-        streamConnected: false,
-        message: '',
-      );
-      String? pulseError;
+      final oppPayload = await _api.fetchOpportunityNowPayload();
+      opp = oppPayload.data;
+      oppRaw = oppPayload.raw;
+    } catch (e) {
+      oppError = _friendlyError(e);
+    }
+
+    try {
+      final listPayload = await _api.fetchMarketPulseAlertsPayload();
+      pulseList = listPayload.data;
+      pulseListRaw = listPayload.raw;
       try {
-        pulseList = await _api.fetchMarketPulseAlerts();
-        pulseHealth = await _api.fetchMarketPulseHealth();
+        final healthPayload = await _api.fetchMarketPulseHealthPayload();
+        pulseHealth = healthPayload.data;
+        pulseHealthRaw = healthPayload.raw;
       } catch (e) {
         pulseError = _friendlyError(e);
       }
-      await _loadOpportunityNow();
-      if (mounted) {
-        setState(() {
-          _pulseListing = pulseList;
-          _pulseState = pulseError != null
-              ? PulseServiceState.error
-              : _derivePulseState(pulseList, pulseHealth);
-          _loading = false;
-        });
-      }
     } catch (e) {
-      if (mounted) {
+      pulseError = _friendlyError(e);
+    }
+
+    try {
+      final hasFreshOpportunity = opp != null || pulseList != null;
+      if (hasFreshOpportunity &&
+          (_lastSuccessfulFetch == null || !fetchedAt.isBefore(_lastSuccessfulFetch!))) {
+        final snapshot = HomeCachedSnapshot(
+          fetchedAt: fetchedAt,
+          opportunityRaw: oppRaw ?? HomeScreenCache.memorySnapshot?.opportunityRaw,
+          pulseListRaw: pulseListRaw ?? HomeScreenCache.memorySnapshot?.pulseListRaw,
+          pulseHealthRaw: pulseHealthRaw ?? HomeScreenCache.memorySnapshot?.pulseHealthRaw,
+        );
+        await HomeScreenCache.save(snapshot);
+        _lastSuccessfulFetch = fetchedAt;
+
+        if (mounted) {
+          setState(() {
+            if (opp != null) {
+              _opportunityNow = opp;
+              _opportunityError = null;
+            }
+            if (pulseList != null) {
+              _pulseListing = pulseList;
+              _pulseState = pulseError != null
+                  ? (_pulseListing != null ? _pulseState : PulseServiceState.error)
+                  : _derivePulseState(pulseList, pulseHealth ?? _defaultPulseHealth());
+            }
+            _opportunityLoading = false;
+          });
+        }
+      } else if (mounted) {
         setState(() {
-          _loading = false;
-          _pulseState = PulseServiceState.error;
+          if (oppError != null && _opportunityNow == null) {
+            _opportunityError = oppError;
+          }
+          _opportunityLoading = false;
         });
       }
+    } finally {
+      _refreshInFlight = false;
     }
+  }
+
+  MarketPulseHealth _defaultPulseHealth() {
+    return const MarketPulseHealth(
+      enabled: false,
+      status: 'disabled',
+      hasApiKey: false,
+      subscribedSymbols: 0,
+      maxSymbols: 50,
+      streamConnected: false,
+      message: '',
+    );
   }
 
   String _friendlyError(Object error) {
@@ -152,7 +230,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (text.contains('401') || text.contains('انتهت الجلسة')) {
       return 'انتهت الجلسة — سجّل الدخول مجددًا';
     }
-    if (text.contains('ClientException') || text.contains('Load failed')) {
+    if (text.contains('ClientException') || text.contains('Load failed') || text.contains('TimeoutException')) {
       return 'تعذر الاتصال بالخادم — تحقق من الشبكة';
     }
     return ArUi.backendText(text);
@@ -188,7 +266,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _logout() async {
-    await context.read<AppState>().logout();
+    await HomeScreenCache.clear();
+    final appState = context.read<AppState>();
+    await appState.logout();
     if (mounted) {
       Navigator.of(context).pushNamedAndRemoveUntil('/login', (_) => false);
     }
@@ -234,13 +314,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final showOpportunitySpinner = _opportunityLoading && _opportunityNow == null;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('مساعد الأسهم الذكي'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: _loading ? null : _load,
+            onPressed: _refreshInFlight ? null : () => _refreshAll(background: _hasCachedOpportunity),
             tooltip: 'تحديث',
           ),
           IconButton(
@@ -251,17 +333,24 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: () => _load(backgroundRefresh: true),
+        onRefresh: () => _refreshAll(background: _hasCachedOpportunity),
         color: AppTheme.primary,
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
             JumpSection(
               data: _opportunityNow,
-              loading: _opportunityLoading && _opportunityNow == null,
+              loading: showOpportunitySpinner,
               onOpenSymbol: _openAnalysis,
             ),
-            if (_opportunityError != null) ...[
+            if (_opportunityError != null && _opportunityNow != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _opportunityError!,
+                style: const TextStyle(color: AppTheme.danger, fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+            ] else if (_opportunityError != null && _opportunityNow == null && _bootstrapComplete) ...[
               const SizedBox(height: 8),
               Text(
                 _opportunityError!,
@@ -273,7 +362,9 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildHeroBanner(),
             const SizedBox(height: 12),
             MarketPulseHomeEntryCard(
-              state: _pulseState,
+              state: _pulseState == PulseServiceState.loading && _pulseListing != null
+                  ? PulseServiceState.delayed
+                  : _pulseState,
               alertCount: _validPulseAlerts.length,
               onTap: _openPulse,
             ),
@@ -281,7 +372,7 @@ class _HomeScreenState extends State<HomeScreen> {
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
-                onPressed: _load,
+                onPressed: _refreshInFlight ? null : () => _refreshAll(background: _hasCachedOpportunity),
                 icon: const Icon(Icons.refresh),
                 label: const Text('تحديث'),
               ),
