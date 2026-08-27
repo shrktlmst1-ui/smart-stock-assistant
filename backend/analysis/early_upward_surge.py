@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import pandas as pd
 
@@ -386,11 +387,140 @@ def fast_filter_surge_rank(change_percent: float, rvol: float) -> float:
     return rvol * 2.5 + min(change_percent, 12.0) * 0.5 - extension_penalty
 
 
+WAVE_ACCEL_1M_ACTIVE = 0.08
+WAVE_ACCEL_3M_ACTIVE = 0.15
+WAVE_STAGNANT_1M = 0.03
+WAVE_STAGNANT_3M = 0.12
+WAVE_NEW_ACCEL_1M = 0.12
+WAVE_NEW_ACCEL_3M = 0.22
+
+
+@dataclass
+class RealJumpWaveSnapshot:
+    """Short-window upward wave — independent of session/day change."""
+
+    move_start_time: datetime | None = None
+    move_start_price: float = 0.0
+    current_move_pct: float = 0.0
+    price_acceleration_1m: float = 0.0
+    price_acceleration_3m: float = 0.0
+    price_acceleration_5m: float = 0.0
+    wave_active: bool = False
+    wave_ended: bool = False
+    is_new_wave: bool = False
+
+
 @dataclass
 class RealPriceJumpVerdict:
     confirmed: bool = False
     reject_reason: str = ""
     evidence_factors: list[str] = field(default_factory=list)
+    explosive_score: int = 0
+    wave: RealJumpWaveSnapshot | None = None
+
+
+def _wave_has_upward_momentum(acc_1m: float, acc_3m: float, acc_5m: float) -> bool:
+    instant = acc_1m >= 0.20 and acc_3m >= 0.25
+    building = acc_1m >= 0.15 and acc_3m >= 0.28 and acc_3m >= acc_1m * 1.15
+    sustained = acc_1m >= 0.18 and acc_3m >= 0.30 and acc_5m >= 0.35
+    return instant or building or sustained
+
+
+def _wave_is_stagnant(acc_1m: float, acc_3m: float) -> bool:
+    return acc_1m <= WAVE_STAGNANT_1M and acc_3m <= WAVE_STAGNANT_3M
+
+
+def derive_real_jump_wave(
+    *,
+    bars: pd.DataFrame | None,
+    current_price: float,
+    prior: RealJumpWaveSnapshot | None = None,
+    move_start_time: datetime | None = None,
+    price_acceleration_1m: float | None = None,
+    price_acceleration_3m: float | None = None,
+    price_acceleration_5m: float | None = None,
+) -> RealJumpWaveSnapshot:
+    """Detect the current short-window wave from 1m/3m/5m bars or supplied accelerations."""
+    acc_1m, acc_3m, acc_5m = compute_price_acceleration(bars)
+    if price_acceleration_1m is not None:
+        acc_1m = price_acceleration_1m
+    if price_acceleration_3m is not None:
+        acc_3m = price_acceleration_3m
+    if price_acceleration_5m is not None:
+        acc_5m = price_acceleration_5m
+
+    wave = RealJumpWaveSnapshot(
+        price_acceleration_1m=acc_1m,
+        price_acceleration_3m=acc_3m,
+        price_acceleration_5m=acc_5m,
+    )
+
+    move_start = 0.0
+    start_time = move_start_time
+    if bars is not None and len(bars) >= 2:
+        lows = bars["low"].astype(float)
+        lookback = min(6, len(bars))
+        move_start = float(lows.iloc[-lookback:].min())
+        if "timestamp" in bars.columns and len(bars) >= lookback:
+            ts = bars["timestamp"].iloc[-lookback]
+            if isinstance(ts, pd.Timestamp):
+                start_time = ts.to_pydatetime()
+    elif prior and prior.move_start_price > 0:
+        move_start = prior.move_start_price
+        start_time = prior.move_start_time
+
+    if move_start <= 0 and prior and prior.move_start_price > 0:
+        move_start = prior.move_start_price
+        start_time = prior.move_start_time
+
+    current_move_pct = (
+        (current_price - move_start) / move_start * 100.0 if move_start > 0 else 0.0
+    )
+    momentum = _wave_has_upward_momentum(acc_1m, acc_3m, acc_5m)
+    stagnant = _wave_is_stagnant(acc_1m, acc_3m)
+
+    if prior and prior.wave_active and stagnant:
+        wave.wave_active = False
+        wave.wave_ended = True
+        wave.move_start_price = prior.move_start_price
+        wave.move_start_time = prior.move_start_time
+        wave.current_move_pct = current_move_pct
+        return wave
+
+    if prior and not prior.wave_active and momentum and current_move_pct >= 2.0:
+        wave.is_new_wave = True
+        if bars is not None and len(bars) >= 3:
+            move_start = float(bars["low"].astype(float).iloc[-3:].min())
+            current_move_pct = (
+                (current_price - move_start) / move_start * 100.0 if move_start > 0 else 0.0
+            )
+        wave.wave_active = True
+        wave.move_start_price = move_start
+        wave.move_start_time = start_time
+        wave.current_move_pct = current_move_pct
+        return wave
+
+    if momentum and current_move_pct >= 2.0:
+        wave.wave_active = True
+        if prior and prior.wave_active and prior.move_start_price > 0:
+            wave.move_start_price = prior.move_start_price
+            wave.move_start_time = prior.move_start_time
+            wave.current_move_pct = (
+                (current_price - prior.move_start_price) / prior.move_start_price * 100.0
+            )
+        else:
+            wave.move_start_price = move_start
+            wave.move_start_time = start_time
+            wave.current_move_pct = current_move_pct
+        return wave
+
+    if stagnant or acc_1m < -0.04:
+        wave.wave_active = False
+        wave.wave_ended = bool(prior and prior.wave_active)
+    wave.move_start_price = move_start
+    wave.move_start_time = start_time
+    wave.current_move_pct = current_move_pct
+    return wave
 
 
 def _higher_high_or_breakout(
@@ -423,7 +553,7 @@ def _multi_tick_upward_persistence(
     persistence_minutes: int,
     micro_higher_lows: bool,
     price_volume_response: float,
-    change_pct: float,
+    current_move_pct: float = 0.0,
     reacceleration: bool,
 ) -> bool:
     if reacceleration:
@@ -435,10 +565,46 @@ def _multi_tick_upward_persistence(
     if (
         micro_higher_lows
         and price_volume_response >= 0.35
-        and change_pct >= STAGE_EE_MIN_SESSION_CHANGE_PCT
+        and current_move_pct >= 2.0
     ):
         return True
     return False
+
+
+def _strong_accelerating_price_from_wave(
+    wave: RealJumpWaveSnapshot,
+    *,
+    price_volume_response: float,
+    bars: pd.DataFrame | None,
+) -> tuple[bool, list[str]]:
+    factors: list[str] = []
+    acc_1m = wave.price_acceleration_1m
+    acc_3m = wave.price_acceleration_3m
+    acc_5m = wave.price_acceleration_5m
+    if bars is not None and len(bars) >= 2:
+        acc_1m, acc_3m, acc_5m = compute_price_acceleration(bars)
+        wave.price_acceleration_1m = acc_1m
+        wave.price_acceleration_3m = acc_3m
+        wave.price_acceleration_5m = acc_5m
+    if acc_1m > 0.12:
+        factors.append("price_accel_1m")
+    if acc_3m > 0.28:
+        factors.append("price_accel_3m")
+    if acc_5m > 0.38:
+        factors.append("price_accel_5m")
+    building = acc_1m > 0.08 and acc_3m > max(acc_1m * 0.85, 0.15)
+    if building:
+        factors.append("accel_building")
+    if price_volume_response >= 0.4 and wave.current_move_pct >= 2.0:
+        factors.append("price_volume_response")
+    strong = (
+        (acc_1m > 0.15 and acc_3m > 0.25)
+        or (building and acc_3m > 0.2)
+        or (acc_1m > 0.1 and acc_3m > 0.18 and acc_5m > 0.25)
+        or (price_volume_response >= 0.45 and acc_1m > 0.1)
+        or _wave_has_upward_momentum(acc_1m, acc_3m, acc_5m)
+    )
+    return strong, factors
 
 
 def evaluate_real_price_jump(
@@ -491,7 +657,7 @@ def evaluate_real_price_jump(
         persistence_minutes=persistence_minutes,
         micro_higher_lows=micro_higher_lows,
         price_volume_response=price_volume_response,
-        change_pct=change_pct,
+        current_move_pct=change_pct,
         reacceleration=reacceleration,
     )
 
@@ -530,10 +696,70 @@ def evaluate_real_price_jump(
     return out
 
 
+def _momentum_after_first_surge(
+    bars: pd.DataFrame | None,
+    *,
+    persistence_minutes: int,
+    reacceleration: bool,
+) -> bool:
+    if reacceleration:
+        return True
+    if persistence_minutes >= 2:
+        return True
+    if bars is not None and len(bars) >= 3 and _price_momentum_persisted(bars):
+        return True
+    if bars is not None and len(bars) >= 4:
+        closes = bars["close"].astype(float)
+        if closes.iloc[-1] > closes.iloc[-2] >= closes.iloc[-3]:
+            return True
+    return False
+
+
+def _strong_accelerating_price(
+    bars: pd.DataFrame | None,
+    *,
+    price_volume_response: float,
+    change_pct: float,
+) -> tuple[bool, list[str]]:
+    factors: list[str] = []
+    acc_1m, acc_3m, acc_5m = compute_price_acceleration(bars)
+    if acc_1m > 0.12:
+        factors.append("price_accel_1m")
+    if acc_3m > 0.28:
+        factors.append("price_accel_3m")
+    if acc_5m > 0.38:
+        factors.append("price_accel_5m")
+    building = acc_1m > 0.08 and acc_3m > max(acc_1m * 0.85, 0.15)
+    if building:
+        factors.append("accel_building")
+    if price_volume_response >= 0.4 and change_pct >= STAGE_EE_MIN_SESSION_CHANGE_PCT:
+        factors.append("price_volume_response")
+    strong = (
+        (acc_1m > 0.15 and acc_3m > 0.25)
+        or (building and acc_3m > 0.2)
+        or (acc_1m > 0.1 and acc_3m > 0.18 and acc_5m > 0.25)
+        or (price_volume_response >= 0.45 and acc_1m > 0.1)
+    )
+    return strong, factors
+
+
+def _bounce_after_drop(bars: pd.DataFrame | None, current_move_pct: float) -> bool:
+    if bars is None or len(bars) < 5:
+        return False
+    closes = bars["close"].astype(float)
+    peak = closes.max()
+    trough = closes.iloc[:-1].min()
+    if peak <= 0 or trough <= 0:
+        return False
+    drop_pct = (peak - trough) / peak * 100
+    rebound = (closes.iloc[-1] - trough) / trough * 100
+    return drop_pct >= 4.0 and rebound < drop_pct * 0.6 and current_move_pct < 8.0
+
+
 def evaluate_real_jump_alert(
     *,
     current_price: float,
-    change_pct: float,
+    change_pct: float = 0.0,
     price_volume_response: float = 0.0,
     micro_higher_lows: bool = False,
     vwap_hold: bool = False,
@@ -553,96 +779,216 @@ def evaluate_real_jump_alert(
     spread_pct: float = 99.0,
     persistence_minutes: int = 0,
     move_from_base_pct: float = 0.0,
+    range_compression_3m: float = 0.0,
     compression_only: bool = False,
     watch_only: bool = False,
+    late_guard: bool = False,
     bars: pd.DataFrame | None = None,
     reacceleration: bool = False,
+    wave: RealJumpWaveSnapshot | None = None,
 ) -> RealPriceJumpVerdict:
     """
-    REAL_JUMP_ALERT — strict upward price jump only.
-    Volume/RVOL/activity alone never qualify.
+    REAL_JUMP_ALERT — instant upward wave fingerprint (1m/3m/5m), not session/day change.
+    ``change_pct`` is session context only and never used as a primary gate.
     """
+    out = RealPriceJumpVerdict()
     if compression_only:
-        return RealPriceJumpVerdict(reject_reason="compression_without_price_move")
+        out.reject_reason = "compression_without_price_move"
+        return out
     if watch_only:
-        return RealPriceJumpVerdict(reject_reason="watch_without_price_jump")
-    if change_pct <= 0:
-        return RealPriceJumpVerdict(reject_reason="flat_or_down")
+        out.reject_reason = "watch_without_price_jump"
+        return out
+    if current_price <= 0:
+        out.reject_reason = "invalid_price"
+        return out
 
-    price_core = evaluate_real_price_jump(
+    active_wave = wave or derive_real_jump_wave(
+        bars=bars,
         current_price=current_price,
-        change_pct=change_pct,
-        price_volume_response=price_volume_response,
-        micro_higher_lows=micro_higher_lows,
-        vwap_hold=vwap_hold,
-        vwap_reclaim=vwap_reclaim,
-        breakout_pressure=breakout_pressure,
-        resistance_distance_pct=resistance_distance_pct,
-        trigger_price=trigger_price,
-        movement_start_price=movement_start_price,
+        move_start_time=None,
+    )
+    if movement_start_price > 0 and active_wave.move_start_price <= 0:
+        active_wave.move_start_price = movement_start_price
+        active_wave.current_move_pct = (
+            (current_price - movement_start_price) / movement_start_price * 100.0
+        )
+    out.wave = active_wave
+    move_pct = active_wave.current_move_pct
+
+    if not active_wave.wave_active and not reacceleration:
+        out.reject_reason = "no_active_wave" if not active_wave.wave_ended else "wave_ended"
+        return out
+    if active_wave.wave_ended and not reacceleration:
+        out.reject_reason = "wave_ended"
+        return out
+    if move_pct <= 0 and not reacceleration:
+        out.reject_reason = "flat_or_down"
+        return out
+    if late_guard and move_pct >= STAGE_EE_MAX_EXTENSION_PCT:
+        out.reject_reason = "too_late_to_chase"
+        return out
+    if move_pct >= STAGE_EE_MAX_EXTENSION_PCT:
+        out.reject_reason = "wave_too_extended"
+        return out
+    if liquidity_score < PREMOVE_MIN_LIQUIDITY_SCORE or spread_pct > STAGE_EE_MAX_SPREAD_PCT:
+        out.reject_reason = "liquidity_spread_unacceptable"
+        return out
+    if _bounce_after_drop(bars, move_pct):
+        out.reject_reason = "bounce_after_drop"
+        return out
+
+    rvol_eff = _effective_rvol(rvol=rvol, rvol_same_time=rvol_same_time)
+    surge_only = relative_surge_detected(
+        change_percent=max(move_pct, 0.01),
         volume_acceleration_1m=volume_acceleration_1m,
         volume_acceleration_slope=volume_acceleration_slope,
         rvol=rvol,
         rvol_same_time=rvol_same_time,
         trade_velocity_growth=trade_velocity_growth,
         dollar_volume_growth=dollar_volume_growth,
-        persistence_minutes=persistence_minutes,
-        bars=bars,
-        reacceleration=reacceleration,
+        breakout_pressure=breakout_pressure,
+        price_volume_response=price_volume_response,
+        micro_higher_lows=micro_higher_lows,
+        vwap_support=vwap_hold or vwap_reclaim,
     )
-    if not price_core.confirmed:
-        rvol_eff = _effective_rvol(rvol=rvol, rvol_same_time=rvol_same_time)
-        surge_only = relative_surge_detected(
-            change_percent=change_pct,
-            volume_acceleration_1m=volume_acceleration_1m,
-            volume_acceleration_slope=volume_acceleration_slope,
-            rvol=rvol,
-            rvol_same_time=rvol_same_time,
-            trade_velocity_growth=trade_velocity_growth,
-            dollar_volume_growth=dollar_volume_growth,
-            breakout_pressure=breakout_pressure,
-            price_volume_response=price_volume_response,
-            micro_higher_lows=micro_higher_lows,
-            vwap_support=vwap_hold or vwap_reclaim,
-        )
-        if rvol_eff >= STAGE_RVOL_MIN and not price_core.evidence_factors:
-            price_core.reject_reason = "rvol_only"
-        elif volume_acceleration_1m >= STAGE_VOL_ACCEL_MIN and change_pct < STAGE_EE_MIN_SESSION_CHANGE_PCT:
-            price_core.reject_reason = "volume_accel_only"
-        elif surge_only and change_pct < STAGE_EE_MIN_SESSION_CHANGE_PCT:
-            price_core.reject_reason = "activity_spike_only"
-        return price_core
+
+    price_strong, price_factors = _strong_accelerating_price_from_wave(
+        active_wave,
+        price_volume_response=price_volume_response,
+        bars=bars,
+    )
+    if not price_strong and (bars is None or bars.empty):
+        if (
+            price_volume_response >= 0.45
+            and move_pct >= 3.0
+            and persistence_minutes >= 2
+            and volume_acceleration_1m >= STAGE_VOL_ACCEL_STRONG
+            and _wave_has_upward_momentum(
+                active_wave.price_acceleration_1m,
+                active_wave.price_acceleration_3m,
+                active_wave.price_acceleration_5m,
+            )
+        ):
+            price_strong = True
+            price_factors.extend(["live_momentum_proxy", "multi_tick_proxy"])
+    if not price_strong and price_volume_response < 0.4:
+        if rvol_eff >= STAGE_RVOL_MIN and move_pct <= 6:
+            out.reject_reason = "rvol_only"
+            return out
+        if volume_acceleration_1m >= STAGE_VOL_ACCEL_MIN and move_pct <= 6:
+            out.reject_reason = "volume_accel_only"
+            return out
+        if surge_only and move_pct <= 6:
+            out.reject_reason = "activity_spike_only"
+            return out
+
+    move_start = active_wave.move_start_price
+    if move_start <= 0 and trigger_price > 0:
+        move_start = trigger_price * 0.985
+    expansion_from_start = (
+        move_start > 0 and current_price > move_start * 1.025
+    ) or move_pct >= 3.0
+    tight_base_break = range_compression_3m >= 0.45 or (
+        move_pct >= 2.5 and price_volume_response >= 0.35
+    )
+    price_expansion = expansion_from_start and (tight_base_break or move_pct >= 4.0)
+
+    breakout = _higher_high_or_breakout(
+        current_price=current_price,
+        micro_higher_lows=micro_higher_lows,
+        trigger_price=trigger_price,
+        breakout_pressure=breakout_pressure,
+        resistance_distance_pct=resistance_distance_pct,
+        bars=bars,
+    )
+    multi_tick = _multi_tick_upward_persistence(
+        bars=bars,
+        persistence_minutes=persistence_minutes,
+        micro_higher_lows=micro_higher_lows,
+        price_volume_response=price_volume_response,
+        current_move_pct=move_pct,
+        reacceleration=reacceleration or active_wave.is_new_wave,
+    )
+    above_start = move_start <= 0 or current_price > move_start
 
     vol_accel_ok = (
-        volume_acceleration_1m >= STAGE_VOL_ACCEL_MIN * 0.85
-        or volume_acceleration_slope >= 1.05
+        volume_acceleration_1m >= STAGE_VOL_ACCEL_STRONG
+        or volume_acceleration_slope >= 1.12
     )
-    trade_vel_ok = (trade_velocity_growth or 0) >= 0.12 or (
-        (trade_velocity or 0) > 0 and (trade_velocity_growth or 0) >= 0.08
+    rvol_st_ok = rvol_same_time is not None and rvol_same_time >= STAGE_EE_MIN_RVOL * 0.85
+    trade_vel_ok = (trade_velocity_growth or 0) >= 0.15 or (
+        (trade_velocity or 0) > 0 and (trade_velocity_growth or 0) >= 0.1
     )
-    buy_pressure_ok = price_volume_response >= 0.3 or dollar_volume_growth >= 0.2
-    liq_ok = liquidity_score >= PREMOVE_MIN_LIQUIDITY_SCORE and spread_pct <= STAGE_EE_MAX_SPREAD_PCT
-    price_expansion_ok = change_pct >= STAGE_EE_MIN_SESSION_CHANGE_PCT and (
-        move_from_base_pct >= STAGE_EE_MIN_SESSION_CHANGE_PCT * 0.45
-        or change_pct >= STAGE_EE_MIN_SESSION_CHANGE_PCT + 0.5
+    buy_pressure_ok = price_volume_response >= 0.35 or dollar_volume_growth >= 0.25
+    vwap_ok = vwap_hold or vwap_reclaim
+    micro_resistance = micro_higher_lows or resistance_distance_pct <= STAGE_BREAKOUT_NEAR_PCT * 1.5
+    momentum_hold = _momentum_after_first_surge(
+        bars, persistence_minutes=persistence_minutes, reacceleration=reacceleration,
     )
 
-    extra_checks = [
-        ("volume_acceleration", vol_accel_ok),
-        ("trade_velocity", trade_vel_ok),
-        ("buy_pressure", buy_pressure_ok),
-        ("price_expansion", price_expansion_ok),
-        ("liquidity_spread", liq_ok),
-    ]
-    missing = [name for name, ok in extra_checks if not ok]
-    if missing:
-        return RealPriceJumpVerdict(
-            reject_reason=f"missing_{'_'.join(missing)}",
-            evidence_factors=list(price_core.evidence_factors),
-        )
+    pct_only = (
+        2.0 <= move_pct <= 6.0
+        and not (vol_accel_ok and rvol_st_ok and price_expansion and price_strong)
+    )
+    if pct_only:
+        out.reject_reason = "pct_only_no_explosive_fingerprint"
+        return out
+    if move_pct < 2.5 and not (
+        range_compression_3m >= 0.5 and vol_accel_ok and rvol_st_ok and price_strong
+    ):
+        out.reject_reason = "early_move_insufficient_for_explosive"
+        return out
+    if bars is not None and len(bars) >= 2:
+        bar_acc_1m, bar_acc_3m, _ = compute_price_acceleration(bars)
+        if move_pct < 5.0 and bar_acc_1m < 0.75:
+            out.reject_reason = "weak_instant_price_acceleration"
+            return out
+        if move_pct < 8.0 and bar_acc_3m < 0.25:
+            out.reject_reason = "weak_instant_price_acceleration"
+            return out
 
-    out = RealPriceJumpVerdict(confirmed=True, evidence_factors=list(price_core.evidence_factors))
-    out.evidence_factors.extend(name for name, ok in extra_checks if ok)
+    checks = {
+        "instant_wave_active": active_wave.wave_active or reacceleration,
+        "price_acceleration": price_strong,
+        "price_expansion": price_expansion,
+        "breakout_higher_high": breakout,
+        "multi_tick_persistence": multi_tick,
+        "above_move_start": above_start,
+        "volume_acceleration": vol_accel_ok,
+        "rvol_same_time": rvol_st_ok,
+        "trade_velocity": trade_vel_ok,
+        "buy_pressure": buy_pressure_ok,
+        "liquidity_spread": liquidity_score >= PREMOVE_MIN_LIQUIDITY_SCORE and spread_pct <= STAGE_EE_MAX_SPREAD_PCT,
+        "momentum_after_surge": momentum_hold,
+    }
+    optional = {
+        "vwap_support": vwap_ok,
+        "micro_resistance": micro_resistance,
+    }
+
+    out.evidence_factors = [k for k, ok in checks.items() if ok]
+    out.evidence_factors.extend(k for k, ok in optional.items() if ok)
+    out.evidence_factors.extend(price_factors)
+    if active_wave.is_new_wave:
+        out.evidence_factors.append("new_instant_wave")
+    out.explosive_score = sum(checks.values()) + sum(optional.values())
+
+    required_missing = [k for k, ok in checks.items() if not ok]
+    min_core = 8
+    if not price_strong:
+        out.reject_reason = "weak_price_acceleration"
+        return out
+    if out.explosive_score < min_core + 1:
+        out.reject_reason = f"missing_{'_'.join(required_missing)}"
+        return out
+    if not price_expansion or not breakout or not multi_tick:
+        out.reject_reason = f"missing_{'_'.join(required_missing)}"
+        return out
+    if not vol_accel_ok or not rvol_st_ok or not trade_vel_ok or not buy_pressure_ok:
+        out.reject_reason = f"missing_{'_'.join(required_missing)}"
+        return out
+
+    out.confirmed = True
     return out
 
 
