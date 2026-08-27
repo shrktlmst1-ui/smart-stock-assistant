@@ -19,11 +19,17 @@ class WatchJumpHomeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final changePrefix = signal.changePercent >= 0 ? '+' : '';
-    final isJump = signal.isJumpAlertDisplay || signal.isQualifiedJumpAlert;
-    final title = isJump ? 'قفزة مؤكدة' : 'ضغط شراء قوي';
-    final subtitle = isJump
-        ? 'JUMP_ALERT — حركة صاعدة مؤكدة'
-        : 'STRONG_BUY_WATCH — شراء قوي قبل الانفجار';
+    final isJump = signal.isRealJumpAlertDisplay || signal.isJumpAlertDisplay || signal.isQualifiedJumpAlert;
+    final title = signal.isRealJumpAlertDisplay
+        ? 'قفزة سعرية حقيقية'
+        : isJump
+            ? 'قفزة مؤكدة'
+            : 'ضغط شراء قوي';
+    final subtitle = signal.isRealJumpAlertDisplay
+        ? 'REAL_JUMP_ALERT — حركة صاعدة حقيقية مؤكدة'
+        : isJump
+            ? 'JUMP_ALERT — حركة صاعدة مؤكدة'
+            : 'STRONG_BUY_WATCH — شراء قوي قبل الانفجار';
 
     return Card(
       color: AppTheme.surface,

@@ -16,7 +16,6 @@ from analysis.early_upward_surge import (
     evaluate_fast_upward_jump,
     evaluate_watch_to_jump_confirmation,
     fast_filter_surge_rank,
-    real_price_jump_from_snapshot,
     relative_surge_detected,
 )
 from analysis.pre_move_breakout import compute_breakout_metrics
@@ -612,20 +611,10 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
         stage_state.fast_watch_display_type = fast_verdict.display_type
     elif stage_state.fast_watch_locked and stage_state.fast_watch_display_type:
         sig.display_confirmed = True
-        jump = real_price_jump_from_snapshot(
-            snap,
-            bars=bars,
-            movement_start_price=stage_state.fast_watch_price or stage_state.first_detected_price,
-            persistence_minutes=stage_metrics.persistence_minutes,
-        )
-        if jump.confirmed and new_lifecycle in ("EARLY_ENTRY", "BREAKOUT_CONFIRMED"):
+        if new_lifecycle in ("EARLY_ENTRY", "BREAKOUT_CONFIRMED"):
             sig.display_type = DISPLAY_JUMP_ALERT
         else:
-            sig.display_type = (
-                DISPLAY_STRONG_BUY_WATCH
-                if stage_state.fast_watch_display_type == DISPLAY_JUMP_ALERT
-                else stage_state.fast_watch_display_type
-            )
+            sig.display_type = stage_state.fast_watch_display_type
         sig.fast_upward_path = True
         if not sig.first_detected_at:
             sig.first_detected_at = stage_state.fast_watch_at
@@ -706,13 +695,7 @@ async def _deep_analyze(candidate: dict[str, Any], session: str) -> PreMoveSigna
             from services.jump_alert_registry import jump_alert_registry
 
             jump_alert_registry.create_from_signal(sig)
-            jump = real_price_jump_from_snapshot(
-                snap,
-                bars=bars,
-                movement_start_price=stage_state.fast_watch_price or stage_state.first_detected_price,
-                persistence_minutes=stage_metrics.persistence_minutes,
-            )
-            sig.display_type = DISPLAY_JUMP_ALERT if jump.confirmed else DISPLAY_STRONG_BUY_WATCH
+            sig.display_type = "JUMP_ALERT"
             sig.display_confirmed = True
             ctx_rvol = sig.volume.rvol_same_time or sig.volume.rvol
             sig.buy_pressure_score = round(fast_filter_surge_rank(sig.change_percent, ctx_rvol), 2)

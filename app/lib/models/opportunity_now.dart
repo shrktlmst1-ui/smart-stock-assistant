@@ -234,6 +234,8 @@ class OpportunityNowSignal {
 
   bool get isJumpAlertDisplay => displayType == 'JUMP_ALERT';
 
+  bool get isRealJumpAlertDisplay => displayType == 'REAL_JUMP_ALERT';
+
   bool get isDisplayableBuyPressure =>
       isStrongBuyWatch || isJumpAlertDisplay || isQualifiedJumpAlert;
 
@@ -264,6 +266,7 @@ class OpportunityNowResponse {
   final OpportunityNowSignal? extendedAlert;
   final List<OpportunityNowSignal> jumpAlerts;
   final List<OpportunityNowSignal> displaySignals;
+  final List<OpportunityNowSignal> realJumpAlerts;
   final String jumpEngineStatus;
 
   const OpportunityNowResponse({
@@ -281,6 +284,7 @@ class OpportunityNowResponse {
     this.extendedAlert,
     this.jumpAlerts = const [],
     this.displaySignals = const [],
+    this.realJumpAlerts = const [],
     this.jumpEngineStatus = 'ARMED',
   });
 
@@ -321,6 +325,14 @@ class OpportunityNowResponse {
             .toList()
         : <OpportunityNowSignal>[];
 
+    final rawRealJump = json['real_jump_alerts'] ?? json['realJumpAlerts'];
+    final realJumpAlerts = rawRealJump is List
+        ? rawRealJump
+            .map((e) => OpportunityNowSignal.fromJson(e as Map<String, dynamic>))
+            .where((s) => s.isRealJumpAlertDisplay)
+            .toList()
+        : <OpportunityNowSignal>[];
+
     final status = readJsonString(json, ['status'], defaultValue: 'NONE');
     final statusAr = readJsonString(json, ['status_ar', 'statusAr']);
 
@@ -343,6 +355,7 @@ class OpportunityNowResponse {
       extendedAlert: extended,
       jumpAlerts: jumpAlerts,
       displaySignals: displaySignals,
+      realJumpAlerts: realJumpAlerts,
       jumpEngineStatus: readJsonString(
         json,
         ['jump_engine_status', 'jumpEngineStatus'],
@@ -393,5 +406,16 @@ class OpportunityNowResponse {
     return out.take(limit).toList();
   }
 
-  bool get hasConfirmedJumps => confirmedJumps().isNotEmpty;
+  /// REAL_JUMP_ALERT first, then existing STRONG_BUY_WATCH / JUMP_ALERT cards unchanged.
+  List<OpportunityNowSignal> jumpSectionItems({int limit = 3}) {
+    final real = realJumpAlerts.take(limit).toList();
+    final seen = real.map((s) => s.symbol.toUpperCase()).toSet();
+    final rest = confirmedJumps(limit: limit)
+        .where((s) => !seen.contains(s.symbol.toUpperCase()))
+        .toList();
+    final slots = limit - real.length;
+    return [...real, ...rest.take(slots)];
+  }
+
+  bool get hasConfirmedJumps => jumpSectionItems().isNotEmpty;
 }

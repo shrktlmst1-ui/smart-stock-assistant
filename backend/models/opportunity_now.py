@@ -91,3 +91,4 @@ class OpportunityNowResponse(BaseModel):
     jump_alerts: list[OpportunityNowSignal] = Field(default_factory=list)
     jump_engine_status: str = "ARMED"
     display_signals: list[OpportunityNowSignal] = Field(default_factory=list)
+    real_jump_alerts: list[OpportunityNowSignal] = Field(default_factory=list)

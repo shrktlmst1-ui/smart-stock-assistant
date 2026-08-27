@@ -35,7 +35,7 @@ class JumpSection extends StatelessWidget {
       );
     }
 
-    final jumps = data?.confirmedJumps(limit: maxItems) ?? const <OpportunityNowSignal>[];
+    final jumps = data?.jumpSectionItems(limit: maxItems) ?? const <OpportunityNowSignal>[];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

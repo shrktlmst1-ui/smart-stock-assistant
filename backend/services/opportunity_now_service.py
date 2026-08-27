@@ -19,10 +19,16 @@ from services.display_buy_pressure_filter import (
     DISPLAY_JUMP_ALERT,
     DISPLAY_STRONG_BUY_WATCH,
     apply_display_verdict,
-    display_sort_key,
     evaluate_extended_gap_display,
     evaluate_jump_alert_display,
     evaluate_premove_display,
+)
+from services.real_jump_alert_layer import (
+    REAL_JUMP_MAX,
+    apply_real_jump_display,
+    eligible_premove,
+    evaluate_opportunity_real_jump,
+    evaluate_premove_real_jump,
 )
 from services.jump_alert_registry import jump_alert_registry
 from services.jump_engine_monitor import jump_engine_monitor
@@ -192,8 +198,56 @@ def _collect_home_display_signals(session: str) -> list[OpportunityNowSignal]:
                 out.append(enriched)
                 seen.add(sym)
 
-    out.sort(key=display_sort_key)
+    out.sort(
+        key=lambda s: (
+            s.display_type == DISPLAY_JUMP_ALERT,
+            s.buy_pressure_score,
+            s.confluence_count,
+            s.score,
+        ),
+        reverse=True,
+    )
     return out[:3]
+
+
+def _collect_real_jump_alerts(session: str) -> list[OpportunityNowSignal]:
+    """REAL_JUMP_ALERT — independent layer above display_signals."""
+    from services.jump_alert_registry import jump_alert_registry
+    from services.pre_move_predictor_service import get_last_pre_move_scan
+
+    seen: set[str] = set()
+    out: list[OpportunityNowSignal] = []
+
+    scan = get_last_pre_move_scan()
+    if scan:
+        for pm in scan.signals:
+            if not eligible_premove(pm):
+                continue
+            verdict = evaluate_premove_real_jump(pm)
+            if not verdict.confirmed:
+                continue
+            sym = pm.symbol.upper()
+            if sym in seen:
+                continue
+            base = _premove_to_opportunity_signal(pm, session=session)
+            out.append(apply_real_jump_display(base, verdict))
+            seen.add(sym)
+
+    for alert in jump_alert_registry.get_qualified_alerts():
+        base = _jump_alert_to_signal(alert, session=session)
+        if base.price <= 0 or base.price > MAX_PRICE_USD or base.change_percent <= 0:
+            continue
+        sym = base.symbol.upper()
+        if sym in seen:
+            continue
+        verdict = evaluate_opportunity_real_jump(base)
+        if not verdict.confirmed:
+            continue
+        out.append(apply_real_jump_display(base, verdict))
+        seen.add(sym)
+
+    out.sort(key=lambda s: (s.buy_pressure_score, s.confluence_count, s.score), reverse=True)
+    return out[:REAL_JUMP_MAX]
 
 
 def collect_display_pipeline_stats(session: str) -> dict:
@@ -528,6 +582,7 @@ def get_opportunity_now() -> OpportunityNowResponse:
 
         jump_alerts = _collect_jump_alerts(session)
         display_signals = _collect_home_display_signals(session)
+        real_jump_alerts = _collect_real_jump_alerts(session)
         engine_snap = jump_engine_monitor.get_snapshot()
         jump_engine_status = engine_snap.jump_engine_status
 
@@ -615,6 +670,7 @@ def get_opportunity_now() -> OpportunityNowResponse:
             jump_alerts=jump_alerts,
             jump_engine_status=jump_engine_status,
             display_signals=display_signals,
+            real_jump_alerts=real_jump_alerts,
         )
     except Exception as exc:
         logger.warning("Opportunity now unavailable: %s", type(exc).__name__)
