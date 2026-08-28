@@ -44,6 +44,8 @@ class TickerMetrics:
     adv30: float = 0.0
     prev_spread_pct: float = 0.0
     session_relative_volume: float = 0.0
+    rvol_available: bool = True
+    dollar_volume: float = 0.0
 
 
 def _safe_float(v: object, default: float = 0.0) -> float:
@@ -80,10 +82,23 @@ def parse_snapshot_item(
     after = item.get("afterHours") or {}
     meta = metadata or {}
 
-    prev_vol = int(prev.get("v") or 1) or 1
+    prev_vol = int(prev.get("v") or 0)
     prev_close = _safe_float(prev.get("c"), price)
 
-    rvol = volume / prev_vol if prev_vol else 1.0
+    adv30 = get_cached_adv30(sym)
+    rvol_available = True
+    if is_regular_session(market_session):
+        # REGULAR: RVOL = intraday volume / ADV30 (not intraday / full prev day).
+        if adv30 > 0:
+            rvol = volume / adv30
+        elif prev_vol > 0:
+            rvol = 0.0
+            rvol_available = False
+        else:
+            rvol = 0.0
+            rvol_available = False
+    else:
+        rvol = volume / prev_vol if prev_vol else 1.0
     day_high = _safe_float(day.get("h"), price)
     day_low = _safe_float(day.get("l"), price)
     day_open = _safe_float(day.get("o"), price)
@@ -119,9 +134,9 @@ def parse_snapshot_item(
     prev_low = _safe_float(prev.get("l"), price)
     prev_spread_pct = ((prev_high - prev_low) / price * 100) if price and prev_high > prev_low else spread_pct
 
-    adv30 = get_cached_adv30(sym)
     prev_session_volume = prev_vol
-    session_rvol = (prev_session_volume / adv30) if adv30 > 0 else rvol
+    session_rvol = (prev_session_volume / adv30) if adv30 > 0 else (rvol if rvol_available else 0.0)
+    dollar_volume = round(price * max(volume, 0), 2)
 
     composite = (
         min(rvol, 5) * 12
@@ -156,6 +171,8 @@ def parse_snapshot_item(
         adv30=adv30,
         prev_spread_pct=round(prev_spread_pct, 2),
         session_relative_volume=round(session_rvol, 2),
+        rvol_available=rvol_available,
+        dollar_volume=dollar_volume,
     )
 
 
@@ -178,8 +195,14 @@ def passes_liquidity_filter(
     if is_regular_session(session):
         if m.volume < SCANNER_MIN_DAY_VOLUME:
             return False
-        if m.relative_volume < SCANNER_MIN_RVOL:
-            return False
+        if m.rvol_available:
+            if m.relative_volume < SCANNER_MIN_RVOL:
+                return False
+        else:
+            # No ADV30/prev baseline — use dollar volume + spread, not fake RVOL.
+            min_dollar = SCANNER_MIN_DAY_VOLUME * max(m.price, SCANNER_MIN_PRICE)
+            if m.dollar_volume < min_dollar * 0.25:
+                return False
         if m.spread_pct > SCANNER_MAX_SPREAD_PCT and m.volume < SCANNER_MIN_DAY_VOLUME * 3:
             return False
         return True

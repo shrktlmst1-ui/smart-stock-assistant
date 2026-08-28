@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 class ApiConfig {
   /// Production backend (Render Web Service).
   static const String productionApiBaseUrl =
-      'https://smart-stock-assistant-api.onrender.com';
+      'https://smart-stock-assistant.onrender.com';
 
   static String get baseUrl {
     const fromEnv = String.fromEnvironment('API_BASE_URL');

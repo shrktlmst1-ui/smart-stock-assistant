@@ -10,9 +10,10 @@ import pytest
 from models.pre_move_stage import PreMoveStageProgressionMetrics, StageSnapshot
 from services.extended_hours_gap_detector import ExtendedGapDetection, extended_gap_registry
 from services.jump_alert_registry import JumpAlertRegistry
-from services.jump_engine_monitor import JumpEngineMonitor, _resolve_jump_engine_status
+from services.jump_engine_monitor import JumpEngineMonitor
 from services.live_price_registry import live_price_registry
 from services.opportunity_now_service import _collect_jump_alerts
+from services.ws_feed_state import DATA_UNAVAILABLE, SUBSCRIBED
 from services.pre_move_stage_store import get_or_create_state, reset_store, update_stage_state
 from services.session_price import ensure_session_cache_valid
 from tests.test_jump_alert_registry import _make_signal
@@ -106,26 +107,48 @@ def test_regular_jump_alert_reaches_opportunity_now():
 
 
 def test_no_live_data_when_ws_disconnected_in_regular():
-    status = _resolve_jump_engine_status(
-        websocket_connected=False,
-        last_ws_message_time="",
-        session="REGULAR",
-    )
-    assert status == "NO_LIVE_DATA"
+    mon = JumpEngineMonitor()
+    with patch("services.jump_engine_monitor.get_us_market_session", return_value="REGULAR"):
+        mon.tick_started(
+            scanner_task_alive=True,
+            feed_state=DATA_UNAVAILABLE,
+            websocket_connected=False,
+            last_ws_message_time="",
+            last_message_age_seconds=None,
+            reconnect_count=0,
+            refresh_in_progress=False,
+            refresh_skipped=0,
+        )
+    assert mon.get_snapshot().jump_engine_status == DATA_UNAVAILABLE
 
 
-def test_armed_when_ws_connected_active_sessions_only():
+def test_subscribed_not_live_when_ws_connected_no_messages():
+    mon = JumpEngineMonitor()
     for session in ("PRE_MARKET", "REGULAR", "AFTER_HOURS"):
-        assert _resolve_jump_engine_status(
+        with patch("services.jump_engine_monitor.get_us_market_session", return_value=session):
+            mon.tick_started(
+                scanner_task_alive=True,
+                feed_state=SUBSCRIBED,
+                websocket_connected=True,
+                last_ws_message_time="",
+                last_message_age_seconds=None,
+                reconnect_count=0,
+                refresh_in_progress=False,
+                refresh_skipped=0,
+            )
+            assert mon.get_snapshot().jump_engine_status == SUBSCRIBED
+    with patch("services.jump_engine_monitor.get_us_market_session", return_value="CLOSED"):
+        mon.tick_started(
+            scanner_task_alive=True,
+            feed_state=SUBSCRIBED,
             websocket_connected=True,
             last_ws_message_time="",
-            session=session,
-        ) == "ARMED"
-    assert _resolve_jump_engine_status(
-        websocket_connected=True,
-        last_ws_message_time="",
-        session="CLOSED",
-    ) == "NO_LIVE_DATA"
+            last_message_age_seconds=None,
+            reconnect_count=0,
+            refresh_in_progress=False,
+            refresh_skipped=0,
+        )
+        assert mon.get_snapshot().jump_engine_status == DATA_UNAVAILABLE
 
 
 def test_extended_registry_survives_regular_transition():
@@ -161,12 +184,14 @@ def test_jump_engine_monitor_records_no_live_data():
     with patch("services.jump_engine_monitor.get_us_market_session", return_value="REGULAR"):
         mon.tick_started(
             scanner_task_alive=True,
+            feed_state=DATA_UNAVAILABLE,
             websocket_connected=False,
             last_ws_message_time="",
+            last_message_age_seconds=None,
             reconnect_count=0,
             refresh_in_progress=False,
             refresh_skipped=0,
         )
     snap = mon.get_snapshot()
     assert snap.status == "RUNNING"
-    assert snap.jump_engine_status == "NO_LIVE_DATA"
+    assert snap.jump_engine_status == DATA_UNAVAILABLE

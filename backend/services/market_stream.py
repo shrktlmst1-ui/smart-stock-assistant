@@ -15,10 +15,13 @@ from services.live_feed_pipeline import live_feed_pipeline
 from services.live_data_gate import live_data_gate, LIVE_DATA_UNAVAILABLE
 from services.live_confirmation_engine import live_confirmation_engine
 from services.live_price_registry import live_price_registry
+from services.live_symbol_ranker import top_live_symbols
 from services.market_scanner_service import market_scanner
 from services.opportunity_now_service import sync_engine_from_scanner
 from services.polygon_client import PolygonClient
 from services.stocks_ws_hub import stocks_ws_hub
+from services.ws_bootstrap_symbols import bootstrap_symbols_from_snapshot
+from services.ws_feed_state import STALE
 
 logger = logging.getLogger(__name__)
 
@@ -71,15 +74,28 @@ class MarketStream:
             self.mode = "scanner_rest"
 
         symbols = self._monitor_symbols()
-        if use_ws and symbols:
-            stocks_ws_hub.set_consumer("jump", symbols, ("T", "Q"))
-            live_confirmation_engine.set_monitor_symbols(symbols)
+        if use_ws:
+            if symbols:
+                stocks_ws_hub.set_consumer("jump", symbols, ("T", "Q"))
+                live_confirmation_engine.set_monitor_symbols(symbols)
+            elif market_scanner._snapshot_raw:
+                from services.universe_manager import universe_manager
 
+                boot = bootstrap_symbols_from_snapshot(
+                    market_scanner._snapshot_raw,
+                    universe_manager.symbol_set,
+                )
+                if boot:
+                    stocks_ws_hub.set_consumer("jump", boot, ("T", "Q"))
+                    live_confirmation_engine.set_monitor_symbols(boot)
+                    logger.info("[LIVE_PRICE] bootstrap WS jump symbols=%d", len(boot))
+
+        monitor_count = len(stocks_ws_hub.get_consumer_symbols("jump"))
         logger.info(
             "Institutional scanner stream: mode=%s tick=%ss monitor_symbols=%d hub=%s",
             self.mode,
             SCANNER_TICK_SECONDS,
-            len(symbols),
+            monitor_count,
             stocks_ws_hub.status_dict(),
         )
 
@@ -176,8 +192,14 @@ class MarketStream:
                         hub_down_since = None
 
                     trades = live_price_registry.status.trades_received
-                    msg_age = live_price_registry.ws_message_age_seconds()
-                    if trades > 0 and msg_age > 90:
+                    msg_age = live_price_registry.last_message_age_seconds()
+                    feed_state = live_price_registry.feed_state()
+                    if feed_state == STALE:
+                        jump_engine_monitor.record_error(f"ws_feed_stale age={msg_age}")
+                        logger.warning("[JUMP] WS feed STALE — forcing shard reconnect")
+                        await stocks_ws_hub.force_stale_reconnect_all()
+                        stale_feed_since = None
+                    elif trades > 0 and msg_age is not None and msg_age > 90:
                         if stale_feed_since is None:
                             stale_feed_since = now
                         elif now - stale_feed_since >= 30:
@@ -185,7 +207,7 @@ class MarketStream:
                             logger.warning("[JUMP] WS feed stale (%.0fs) — recover", msg_age)
                             await stocks_ws_hub.recover_shards()
                             stale_feed_since = None
-                    elif trades > last_trades or msg_age <= 45:
+                    elif trades > last_trades or (msg_age is not None and msg_age <= 45):
                         stale_feed_since = None
                     last_trades = trades
 
@@ -200,18 +222,25 @@ class MarketStream:
                 cs = cache_stats()
                 jump_engine_monitor.tick_started(
                     scanner_task_alive=True,
+                    feed_state=live_price_registry.feed_state(),
                     websocket_connected=live_price_registry.status.connected,
                     last_ws_message_time=live_price_registry.last_message_iso(),
+                    last_message_age_seconds=live_price_registry.last_message_age_seconds(),
                     reconnect_count=live_price_registry.status.reconnect_count,
                     refresh_in_progress=cs.get("refresh_in_progress", False),
                     refresh_skipped=cs.get("refresh_skipped", 0),
+                    ws_url=live_price_registry.status.ws_url,
+                    subscribed_symbol_count=len(live_price_registry.status.subscribed_symbols),
+                    t_channel_count=live_price_registry.status.t_channel_count,
+                    q_channel_count=live_price_registry.status.q_channel_count,
                 )
 
                 if self._hub_started:
                     symbols = self._monitor_symbols()
-                    stocks_ws_hub.set_consumer("jump", symbols, ("T", "Q"))
-                    live_confirmation_engine.set_monitor_symbols(symbols)
-                    ws_ok = live_price_registry.status.connected and live_data_gate.live_feed_valid
+                    if symbols:
+                        stocks_ws_hub.set_consumer("jump", symbols, ("T", "Q"))
+                        live_confirmation_engine.set_monitor_symbols(symbols)
+                    ws_ok = live_price_registry.feed_state() == LIVE and live_data_gate.live_feed_valid
                     live_confirmation_engine.set_ws_status(connected=ws_ok, fallback=not ws_ok)
 
                 state = await market_scanner.run_fast_tick()
@@ -273,12 +302,22 @@ class MarketStream:
 
         premove = get_premove_monitor_symbols()
         rank = list(market_scanner._rank_pool[:50])
-        pool = list(dict.fromkeys(rank + premove))
+        live = top_live_symbols(30)
+        pool = list(dict.fromkeys(rank + live + premove))
         if pool:
             return pool
         state = market_scanner.get_state()
-        if state:
+        if state and state.snapshots:
             return [s.symbol for s in state.snapshots[:72]]
+        if market_scanner._snapshot_raw:
+            from services.universe_manager import universe_manager
+
+            boot = bootstrap_symbols_from_snapshot(
+                market_scanner._snapshot_raw,
+                universe_manager.symbol_set,
+            )
+            if boot:
+                return boot
         return []
 
     async def _handle_ws_payload(self, payload: list | dict) -> None:

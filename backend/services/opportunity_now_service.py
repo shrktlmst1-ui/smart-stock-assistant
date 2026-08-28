@@ -760,11 +760,14 @@ def get_opportunity_now() -> OpportunityNowResponse:
                 resp_status = top.status if top.status != "NONE" else "NONE"
             else:
                 resp_status = "NONE"
-            none_message = (
-                "لا يوجد شراء قوي فعلي الآن"
-                if not display_signals
-                else "لا توجد فرصة مكتملة الآن"
-            )
+            if not feed_valid and session in ("PRE_MARKET", "REGULAR", "AFTER_HOURS"):
+                none_message = LIVE_DATA_UNAVAILABLE
+            else:
+                none_message = (
+                    "لا يوجد شراء قوي فعلي الآن"
+                    if not display_signals
+                    else "لا توجد فرصة مكتملة الآن"
+                )
 
         extended_alert = next(
             (ds for ds in display_signals if ds.extended_gap_pct > 0 and ds.detection_stage),

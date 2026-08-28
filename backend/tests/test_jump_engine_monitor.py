@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from services.jump_engine_monitor import jump_engine_monitor
+from services.ws_feed_state import LIVE, SUBSCRIBED
 
 
 def test_jump_engine_status_log_fields():
     jump_engine_monitor.tick_started(
         scanner_task_alive=True,
+        feed_state=LIVE,
         websocket_connected=True,
         last_ws_message_time="2026-08-26T14:00:00+00:00",
+        last_message_age_seconds=2.0,
         reconnect_count=1,
         refresh_in_progress=False,
         refresh_skipped=0,

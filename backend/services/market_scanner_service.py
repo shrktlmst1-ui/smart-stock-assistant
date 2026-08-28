@@ -275,28 +275,36 @@ class MarketScannerService:
             self._snapshot_raw = {(i.get("ticker") or "").upper(): i for i in raw if i.get("ticker")}
             self._last_full_scan_at = datetime.now(timezone.utc).isoformat()
 
-            if not is_regular_session(self.market_session):
-                adv_candidates: list[str] = []
-                symbol_set = universe_manager.symbol_set
-                for item in raw:
-                    sym = (item.get("ticker") or "").upper()
-                    if sym not in symbol_set:
-                        continue
+            symbol_set = universe_manager.symbol_set
+            adv_candidates: list[tuple[str, int]] = []
+            for item in raw:
+                sym = (item.get("ticker") or "").upper()
+                if sym not in symbol_set:
+                    continue
+                if is_regular_session(self.market_session):
+                    from services.session_price import resolve_session_price
+
+                    sp = resolve_session_price(item, session=self.market_session)
+                    if sp.is_valid and sp.volume >= SCANNER_MIN_DAY_VOLUME // 10:
+                        adv_candidates.append((sym, sp.volume))
+                else:
                     prev = item.get("prevDay") or {}
                     prev_vol = int(prev.get("v") or 0)
                     if prev_vol >= SCANNER_MIN_DAY_VOLUME // 4:
-                        adv_candidates.append(sym)
-                adv_candidates.sort(
-                    key=lambda s: int((self._snapshot_raw.get(s, {}).get("prevDay") or {}).get("v") or 0),
-                    reverse=True,
-                )
-                await enrich_adv30_batch(self.client, adv_candidates)
+                        adv_candidates.append((sym, prev_vol))
+            if adv_candidates:
+                adv_candidates.sort(key=lambda x: x[1], reverse=True)
+                await enrich_adv30_batch(self.client, [s for s, _ in adv_candidates[:800]])
 
             scored = await asyncio.to_thread(
                 coarse_scan_threaded, raw, universe_manager, None, self.market_session,
             )
             self._scored_metrics = scored
-            self._rank_pool = [m.symbol for m, _ in scored[:SCANNER_RANK_POOL]]
+            rank_symbols = [m.symbol for m, _ in scored[:SCANNER_RANK_POOL]]
+            from services.live_symbol_ranker import top_live_symbols
+
+            live_rank = top_live_symbols(40)
+            self._rank_pool = list(dict.fromkeys(rank_symbols + live_rank))[:SCANNER_RANK_POOL]
             self._universe_updated = time.monotonic()
 
             ustats = universe_manager.stats()
@@ -552,9 +560,17 @@ class MarketScannerService:
         session = get_us_market_session()
         ustats = universe_manager.stats()
         overlap = self._snapshot_universe_overlap(self._snapshot_raw)
-        no_signal = self._build_no_signal_reason(
-            session, overlap, len(self._scored_metrics), 0, 0, {},
-        )
+        from services.live_price_registry import live_price_registry
+        from services.market_session import is_jump_engine_armed_session
+        from services.ws_feed_state import DATA_UNAVAILABLE, LIVE
+
+        feed_state = live_price_registry.feed_state()
+        if is_jump_engine_armed_session(session) and feed_state != LIVE:
+            no_signal = DATA_UNAVAILABLE
+        else:
+            no_signal = self._build_no_signal_reason(
+                session, overlap, len(self._scored_metrics), 0, 0, {},
+            )
         state = MarketScanState(
             universe_size=self.universe_size,
             liquid_count=len(self._scored_metrics),

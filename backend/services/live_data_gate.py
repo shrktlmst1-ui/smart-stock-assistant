@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from services.market_session import JUMP_ARMED_SESSIONS, get_us_market_session
+from services.ws_feed_state import DATA_UNAVAILABLE, LIVE, LIVE_DATA_UNAVAILABLE
 
-LIVE_DATA_UNAVAILABLE = "LIVE_DATA_UNAVAILABLE"
 MAX_AGG_AGE_SECONDS = 5.0
 MAX_TRADE_AGE_SECONDS = 15.0
 MIN_AGG_MESSAGES_PER_MIN = 100
@@ -62,7 +62,14 @@ class FeedMetrics:
 
     @property
     def status(self) -> str:
-        return "ARMED" if self.is_valid else LIVE_DATA_UNAVAILABLE
+        from services.live_price_registry import live_price_registry
+
+        state = live_price_registry.feed_state()
+        if state == LIVE and self.is_valid:
+            return LIVE
+        if state in (LIVE, "SUBSCRIBED", "AUTHENTICATED", "CONNECTING", "STALE"):
+            return state
+        return LIVE_DATA_UNAVAILABLE
 
     def to_dict(self) -> dict:
         return {
@@ -103,11 +110,15 @@ class LiveDataGate:
 
     @property
     def live_feed_valid(self) -> bool:
-        return self.metrics.is_valid
+        from services.live_price_registry import live_price_registry
+
+        return live_price_registry.feed_state() == LIVE and self.metrics.is_valid
 
     @property
     def jump_engine_status(self) -> str:
-        return self.metrics.status
+        from services.live_price_registry import live_price_registry
+
+        return live_price_registry.feed_state()
 
 
 live_data_gate = LiveDataGate()

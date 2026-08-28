@@ -96,8 +96,8 @@ def _reset():
 
 
 class TestDeployedProof:
-    API_HEALTH = "https://smart-stock-assistant-api.onrender.com/health"
-    API_OPENAPI = "https://smart-stock-assistant-api.onrender.com/openapi.json"
+    API_HEALTH = "https://smart-stock-assistant.onrender.com/health"
+    API_OPENAPI = "https://smart-stock-assistant.onrender.com/openapi.json"
     WEB_JS = "https://smart-stock-assistant-web.onrender.com/main.dart.js"
     WEB_HOME = "https://smart-stock-assistant-web.onrender.com/"
 
@@ -197,10 +197,10 @@ def run_proof_report() -> list[ProofCase]:
         cases.append(ProofCase(name, ok, pct, fn_name, reason, n_in, n_out))
 
     # Deployed
-    code, _ = _http_get("https://smart-stock-assistant-api.onrender.com/health")
+    code, _ = _http_get("https://smart-stock-assistant.onrender.com/health")
     add("deploy_health_200", lambda: (code == 200, 0.0, f"http_status={code}", 1, 1, "_http_get(/health)"))
 
-    code, body = _http_get("https://smart-stock-assistant-api.onrender.com/openapi.json")
+    code, body = _http_get("https://smart-stock-assistant.onrender.com/openapi.json")
     has_field = False
     if code == 200:
         props = json.loads(body)["components"]["schemas"]["OpportunityNowResponse"]["properties"]

@@ -11,6 +11,7 @@ from models.signal_snapshot import SignalSnapshot
 from services.aggregate_wave_tracker import AggregateWaveTracker, WaveState
 from services.executed_buy_pressure import ExecutedBuyPressureRegistry, TradeSide
 from services.live_data_gate import LIVE_DATA_UNAVAILABLE, LiveDataGate
+from services.live_price_registry import live_price_registry
 
 
 def _ts(minute: int = 0) -> datetime:
@@ -124,13 +125,23 @@ class TestLiveDataGate:
     def test_invalid_without_aggregates(self):
         gate = LiveDataGate()
         gate.set_ws_health(connected=True, authenticated=True, aggregates_subscribed=False)
+        live_price_registry._status.hub_running = True
+        live_price_registry._status.connected = True
+        live_price_registry._status.authenticated = True
         with patch("services.live_data_gate.get_us_market_session", return_value="REGULAR"):
             assert gate.live_feed_valid is False
-            assert gate.jump_engine_status == LIVE_DATA_UNAVAILABLE
+            assert gate.jump_engine_status in ("AUTHENTICATED", "CONNECTING", "DATA_UNAVAILABLE")
 
     def test_valid_with_recent_aggregates(self):
         gate = LiveDataGate()
         gate.set_ws_health(connected=True, authenticated=True, aggregates_subscribed=True)
+        live_price_registry._status.hub_running = True
+        live_price_registry._status.connected = True
+        live_price_registry._status.authenticated = True
+        live_price_registry._status.aggregates_subscribed = True
+        live_price_registry._status.t_channel_count = 2
+        live_price_registry._status.q_channel_count = 2
+        live_price_registry.note_message_received()
         for _ in range(150):
             gate.metrics.note_aggregate()
         with patch("services.live_data_gate.get_us_market_session", return_value="REGULAR"):
@@ -165,7 +176,7 @@ class TestSessionTransitionNoRestFallback:
 
         with patch("services.opportunity_now_service.live_data_gate") as mock_gate:
             mock_gate.live_feed_valid = True
-            mock_gate.jump_engine_status = "ARMED"
+            mock_gate.jump_engine_status = "LIVE"
             mock_gate.metrics.aggregate_age_seconds = 1.0
             with patch("services.opportunity_now_service.get_us_market_session", return_value="REGULAR"):
                 with patch("services.opportunity_now_service.sync_engine_from_scanner"):

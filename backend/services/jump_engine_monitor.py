@@ -8,40 +8,29 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from services.market_session import get_us_market_session, is_jump_engine_armed_session, is_regular_session
+from services.market_session import get_us_market_session, is_regular_session
+from services.ws_feed_state import DATA_UNAVAILABLE, resolve_feed_state
 
 logger = logging.getLogger(__name__)
 
 LOG_INTERVAL_SEC = 30.0
-NO_LIVE_DATA_WS_AGE_SECONDS = 120.0
 
 
 def _resolve_jump_engine_status(
     *,
-    websocket_connected: bool,
-    last_ws_message_time: str,
+    feed_state: str,
     session: str,
 ) -> str:
-    """ARMED only in PRE/REG/AH with live feed; CLOSED → NO_LIVE_DATA."""
-    if not is_jump_engine_armed_session(session):  # type: ignore[arg-type]
-        return "NO_LIVE_DATA"
-    if websocket_connected:
-        return "ARMED"
-    if last_ws_message_time:
-        try:
-            last_dt = datetime.fromisoformat(last_ws_message_time.replace("Z", "+00:00"))
-            age = (datetime.now(timezone.utc) - last_dt).total_seconds()
-            if age <= NO_LIVE_DATA_WS_AGE_SECONDS:
-                return "ARMED"
-        except ValueError:
-            pass
-    return "NO_LIVE_DATA"
+    """Expose feed lifecycle state — LIVE only after real market-data messages."""
+    if session == "CLOSED":
+        return DATA_UNAVAILABLE
+    return feed_state
 
 
 @dataclass
 class JumpEngineSnapshot:
     status: str = "STOPPED"
-    jump_engine_status: str = "ARMED"
+    jump_engine_status: str = DATA_UNAVAILABLE
     market_open: bool = False
     current_session: str = "CLOSED"
     scanner_task_alive: bool = False
@@ -58,6 +47,12 @@ class JumpEngineSnapshot:
     refresh_in_progress: bool = False
     refresh_skipped: int = 0
     last_status_log_mono: float = 0.0
+    feed_state: str = DATA_UNAVAILABLE
+    last_message_age_seconds: float | None = None
+    ws_url: str = ""
+    subscribed_symbol_count: int = 0
+    t_channel_count: int = 0
+    q_channel_count: int = 0
 
 
 class JumpEngineMonitor:
@@ -86,11 +81,17 @@ class JumpEngineMonitor:
         self,
         *,
         scanner_task_alive: bool,
+        feed_state: str,
         websocket_connected: bool,
         last_ws_message_time: str,
+        last_message_age_seconds: float | None,
         reconnect_count: int,
         refresh_in_progress: bool,
         refresh_skipped: int,
+        ws_url: str = "",
+        subscribed_symbol_count: int = 0,
+        t_channel_count: int = 0,
+        q_channel_count: int = 0,
     ) -> None:
         with self._lock:
             self._snap.cycle_number += 1
@@ -98,18 +99,23 @@ class JumpEngineMonitor:
             self._snap.status = "RUNNING"
             self._snap.current_session = session
             self._snap.market_open = is_regular_session(session)
+            self._snap.feed_state = feed_state
             self._snap.jump_engine_status = _resolve_jump_engine_status(
-                websocket_connected=websocket_connected,
-                last_ws_message_time=last_ws_message_time,
+                feed_state=feed_state,
                 session=session,
             )
             self._snap.scanner_task_alive = scanner_task_alive
             self._snap.websocket_connected = websocket_connected
             self._snap.last_ws_message_time = last_ws_message_time
+            self._snap.last_message_age_seconds = last_message_age_seconds
             self._snap.reconnect_count = reconnect_count
             self._snap.refresh_in_progress = refresh_in_progress
             self._snap.refresh_skipped = refresh_skipped
             self._snap.last_scan_time = datetime.now(timezone.utc).isoformat()
+            self._snap.ws_url = ws_url
+            self._snap.subscribed_symbol_count = subscribed_symbol_count
+            self._snap.t_channel_count = t_channel_count
+            self._snap.q_channel_count = q_channel_count
             self._cycle_stage3 = 0
             self._cycle_alerts = 0
 
@@ -162,18 +168,25 @@ class JumpEngineMonitor:
             self._snap.last_status_log_mono = now
             s = self._snap
         logger.info(
-            "JUMP_ENGINE_STATUS status=%s jump_engine_status=%s market_open=%s current_session=%s "
-            "scanner_task_alive=%s websocket_connected=%s last_ws_message_time=%s "
-            "last_scan_time=%s cycle_number=%d scanned_count=%d candidate_count=%d "
-            "stage3_count=%d alerts_generated=%d last_error=%s reconnect_count=%d "
-            "refresh_in_progress=%s refresh_skipped=%d",
+            "JUMP_ENGINE_STATUS status=%s jump_engine_status=%s feed_state=%s market_open=%s "
+            "current_session=%s scanner_task_alive=%s websocket_connected=%s ws_url=%s "
+            "subscribed_symbols=%d t_channels=%d q_channels=%d last_ws_message_time=%s "
+            "last_message_age=%s last_scan_time=%s cycle_number=%d scanned_count=%d "
+            "candidate_count=%d stage3_count=%d alerts_generated=%d last_error=%s "
+            "reconnect_count=%d refresh_in_progress=%s refresh_skipped=%d",
             s.status,
             s.jump_engine_status,
+            s.feed_state,
             s.market_open,
             s.current_session,
             s.scanner_task_alive,
             s.websocket_connected,
+            s.ws_url or "none",
+            s.subscribed_symbol_count,
+            s.t_channel_count,
+            s.q_channel_count,
             s.last_ws_message_time or "none",
+            f"{s.last_message_age_seconds:.1f}s" if s.last_message_age_seconds is not None else "none",
             s.last_scan_time or "none",
             s.cycle_number,
             s.scanned_count,

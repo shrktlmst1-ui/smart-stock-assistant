@@ -157,19 +157,23 @@ def test_cancel_after_90_second_ttl():
 
 
 def test_get_opportunity_now_returns_none_without_exception():
-    with patch.object(svc.market_scanner, "get_state", return_value=None):
-        with patch.object(svc.market_scanner, "_rank_pool", []):
-            resp = svc.get_opportunity_now()
+    with patch("services.opportunity_now_service.live_data_gate") as mock_gate:
+        mock_gate.live_feed_valid = False
+        mock_gate.jump_engine_status = "DATA_UNAVAILABLE"
+        with patch.object(svc.market_scanner, "get_state", return_value=None):
+            with patch.object(svc.market_scanner, "_rank_pool", []):
+                resp = svc.get_opportunity_now()
     assert resp.status == "NONE"
     assert resp.top_signal is None
-    assert "لا توجد فرصة" in resp.message
+    assert resp.message == "DATA_UNAVAILABLE"
+    assert resp.jump_engine_status == "DATA_UNAVAILABLE"
 
 
 def test_ws_fallback_does_not_crash_engine():
     live_confirmation_engine.set_ws_status(connected=False, fallback=True, error="1008 policy")
     resp = svc.get_opportunity_now()
     assert resp.status == "NONE"
-    assert resp.live_source == "rest"
+    assert resp.live_source == "DATA_UNAVAILABLE"
     assert resp.ws_connected is False
 
 

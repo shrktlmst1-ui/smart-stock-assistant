@@ -22,6 +22,8 @@ from services.session_price import (
     _stale,
 )
 
+from services.ws_feed_state import message_age_seconds, resolve_feed_state
+
 logger = logging.getLogger(__name__)
 
 LiveSource = Literal["live_trade", "live_quote"]
@@ -53,15 +55,22 @@ class LivePriceTick:
 class FeedStatus:
     connected: bool = False
     authenticated: bool = False
+    hub_running: bool = False
+    aggregates_subscribed: bool = False
     subscribed_symbols: set[str] = field(default_factory=set)
+    t_channel_count: int = 0
+    q_channel_count: int = 0
+    subscribed_at_mono: float | None = None
     last_trade_at: datetime | None = None
     last_quote_at: datetime | None = None
     last_disconnect_at: datetime | None = None
     last_message_at: datetime | None = None
+    first_message_at: datetime | None = None
     reconnect_count: int = 0
     trades_received: int = 0
     quotes_received: int = 0
     last_error: str = ""
+    ws_url: str = ""
 
 
 class LivePriceRegistry:
@@ -97,19 +106,35 @@ class LivePriceRegistry:
         shards_connected: int,
         shards_total: int,
         subscribed: set[str],
+        hub_running: bool = True,
+        aggregates_subscribed: bool = False,
+        t_channel_count: int = 0,
+        q_channel_count: int = 0,
+        ws_url: str = "",
+        subscribed_at_mono: float | None = None,
     ) -> None:
         """Update feed status from shared stocks WS hub (partial shard OK)."""
         was_connected = self._status.connected
         self._status.connected = shards_connected > 0
         self._status.authenticated = shards_connected > 0
+        self._status.hub_running = hub_running
+        self._status.aggregates_subscribed = aggregates_subscribed
+        self._status.t_channel_count = t_channel_count
+        self._status.q_channel_count = q_channel_count
+        if ws_url:
+            self._status.ws_url = ws_url
+        if subscribed_at_mono is not None:
+            self._status.subscribed_at_mono = subscribed_at_mono
         if subscribed:
             self._status.subscribed_symbols = subscribed
         if shards_connected > 0 and not was_connected:
             logger.info(
-                "[LIVE_PRICE] hub shards connected %d/%d symbols=%d",
+                "[LIVE_PRICE] hub shards connected %d/%d symbols=%d t=%d q=%d",
                 shards_connected,
                 shards_total,
                 len(self._status.subscribed_symbols),
+                t_channel_count,
+                q_channel_count,
             )
         elif shards_connected == 0 and shards_total > 0 and was_connected:
             self._status.last_disconnect_at = datetime.now(timezone.utc)
@@ -158,6 +183,9 @@ class LivePriceRegistry:
         self._ticks[sym] = tick
         self._status.trades_received += 1
         self._status.last_trade_at = now
+        from services.live_symbol_ranker import note_live_trade
+
+        note_live_trade(sym, price, size)
         mono = time.monotonic()
         if mono - self._last_trade_log_mono >= FEED_LOG_INTERVAL_SEC:
             self._last_trade_log_mono = mono
@@ -206,8 +234,28 @@ class LivePriceRegistry:
         self._status.last_quote_at = now
 
     def note_message_received(self) -> None:
-        """Track last inbound WS payload for Jump Engine heartbeat."""
-        self._status.last_message_at = datetime.now(timezone.utc)
+        """Track last inbound WS market payload for Jump Engine heartbeat."""
+        now = datetime.now(timezone.utc)
+        self._status.last_message_at = now
+        if self._status.first_message_at is None:
+            self._status.first_message_at = now
+
+    def feed_state(self) -> str:
+        subscribed = self._status.aggregates_subscribed or (
+            self._status.t_channel_count > 0 and self._status.q_channel_count > 0
+        )
+        return resolve_feed_state(
+            session=get_us_market_session(),
+            hub_running=self._status.hub_running,
+            connected=self._status.connected,
+            authenticated=self._status.authenticated,
+            subscribed=subscribed,
+            last_message_at=self._status.last_message_at,
+            subscribed_at_mono=self._status.subscribed_at_mono,
+        )
+
+    def last_message_age_seconds(self) -> float | None:
+        return message_age_seconds(self._status.last_message_at)
 
     def last_message_iso(self) -> str:
         ts = self._status.last_message_at
