@@ -69,6 +69,13 @@ class FeedStatus:
     reconnect_count: int = 0
     trades_received: int = 0
     quotes_received: int = 0
+    aggregates_received: int = 0
+    provider_subscription_ack: bool = False
+    provider_subscription_ack_message: str = ""
+    bootstrap_snapshot_count: int = 0
+    bootstrap_symbols_count: int = 0
+    requested_channels_count: int = 0
+    stale_failure_count: int = 0
     last_error: str = ""
     ws_url: str = ""
 
@@ -143,6 +150,33 @@ class LivePriceRegistry:
     def note_reconnect(self) -> None:
         self._status.reconnect_count += 1
         logger.info("[LIVE_PRICE] reconnect attempt=%d", self._status.reconnect_count)
+
+    def note_stale_reconnect(self) -> None:
+        self._status.stale_failure_count += 1
+        logger.warning(
+            "[LIVE_PRICE] stale_reconnect stale_failure_count=%d",
+            self._status.stale_failure_count,
+        )
+
+    def set_bootstrap_metrics(self, *, snapshot_count: int, symbols_count: int) -> None:
+        self._status.bootstrap_snapshot_count = snapshot_count
+        self._status.bootstrap_symbols_count = symbols_count
+
+    def set_provider_subscription_ack(self, ack: bool, message: str = "") -> None:
+        self._status.provider_subscription_ack = ack
+        if message:
+            self._status.provider_subscription_ack_message = message[:200]
+        if ack:
+            logger.info(
+                "[LIVE_PRICE] provider_subscription_ack message=%s",
+                message[:120],
+            )
+
+    def set_requested_channels_count(self, count: int) -> None:
+        self._status.requested_channels_count = count
+
+    def note_aggregate_received(self) -> None:
+        self._status.aggregates_received += 1
 
     def set_error(self, msg: str) -> None:
         self._status.last_error = msg[:200]
@@ -239,10 +273,12 @@ class LivePriceRegistry:
         self._status.last_message_at = now
         if self._status.first_message_at is None:
             self._status.first_message_at = now
+            logger.info("[LIVE_PRICE] first_ws_message_time=%s", now.isoformat())
+        self._status.stale_failure_count = 0
 
     def feed_state(self) -> str:
-        subscribed = self._status.aggregates_subscribed or (
-            self._status.t_channel_count > 0 and self._status.q_channel_count > 0
+        subscribed = self._status.provider_subscription_ack and (
+            self._status.t_channel_count > 0 or self._status.q_channel_count > 0
         )
         return resolve_feed_state(
             session=get_us_market_session(),
@@ -252,6 +288,7 @@ class LivePriceRegistry:
             subscribed=subscribed,
             last_message_at=self._status.last_message_at,
             subscribed_at_mono=self._status.subscribed_at_mono,
+            stale_failure_count=self._status.stale_failure_count,
         )
 
     def last_message_age_seconds(self) -> float | None:

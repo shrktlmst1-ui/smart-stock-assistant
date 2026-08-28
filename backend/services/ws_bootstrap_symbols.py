@@ -13,6 +13,24 @@ BOOTSTRAP_MIN_VOLUME = int(__import__("os").getenv("WS_BOOTSTRAP_MIN_VOLUME", "5
 BOOTSTRAP_LIMIT = int(__import__("os").getenv("WS_BOOTSTRAP_SYMBOL_LIMIT", "50"))
 
 
+def _day_bar_metrics(item: dict) -> tuple[float, int] | None:
+    """REST coarse metrics — day bar first, avoids strict live freshness gates."""
+    day = item.get("day") or {}
+    prev = item.get("prevDay") or {}
+    price = float(day.get("c") or day.get("o") or prev.get("c") or 0)
+    vol = int(day.get("v") or 0)
+    if price <= 0:
+        return None
+    return price, vol
+
+
+def _item_price_volume(item: dict) -> tuple[float, int] | None:
+    sp = resolve_session_price(item)
+    if sp.is_valid and sp.price > 0:
+        return sp.price, int(sp.volume or 0)
+    return _day_bar_metrics(item)
+
+
 def bootstrap_symbols_from_snapshot(
     snapshot_raw: dict[str, dict],
     symbol_set: set[str],
@@ -20,18 +38,17 @@ def bootstrap_symbols_from_snapshot(
     limit: int = BOOTSTRAP_LIMIT,
     min_volume: int = BOOTSTRAP_MIN_VOLUME,
 ) -> list[str]:
-    """Rank universe tickers by dollar volume + intraday volume — no rank_pool dependency."""
+    """Rank tickers by dollar volume — no rank_pool or liquid dependency."""
     ranked: list[tuple[str, float, int]] = []
     for sym, item in snapshot_raw.items():
-        if sym not in symbol_set:
+        if symbol_set and sym not in symbol_set:
             continue
-        sp = resolve_session_price(item)
-        if not sp.is_valid:
+        metrics = _item_price_volume(item)
+        if not metrics:
             continue
-        price = sp.price
+        price, vol = metrics
         if price < SCANNER_MIN_PRICE or price > SCANNER_MAX_PRICE:
             continue
-        vol = int(sp.volume or 0)
         if vol < min_volume:
             continue
         day = item.get("day") or {}
@@ -47,9 +64,14 @@ def bootstrap_symbols_from_snapshot(
     symbols = [s for s, _, _ in ranked[:limit]]
     if symbols:
         logger.info(
-            "[WS_BOOTSTRAP] snapshot bootstrap symbols=%d top=%s dollar_vol_top=%.0f",
+            "[WS_BOOTSTRAP] ranked bootstrap_symbols_count=%d top=%s dollar_vol_top=%.0f",
             len(symbols),
             symbols[:5],
-            ranked[0][1] if ranked else 0,
+            ranked[0][1],
+        )
+    else:
+        logger.warning(
+            "[WS_BOOTSTRAP] ranked bootstrap_symbols_count=0 from snapshot_items=%d",
+            len(snapshot_raw),
         )
     return symbols

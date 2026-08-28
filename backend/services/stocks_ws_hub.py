@@ -464,8 +464,7 @@ class StocksWsHub:
             live_data_gate.metrics.reconnect_count = sum(s.reconnect_count for s in self._shards)
 
     def _mark_subscribed(self, shard: ShardState) -> None:
-        if shard.subscribed_channels and shard.subscribed_at_mono is None:
-            shard.subscribed_at_mono = time.monotonic()
+        """Channel intent recorded — subscribed_at_mono set only on provider ack."""
         self._publish_registry_health()
 
     def _should_force_stale_reconnect(self, shard: ShardState) -> tuple[bool, str]:
@@ -491,12 +490,20 @@ class StocksWsHub:
         msg_age = live_price_registry.last_message_age_seconds()
         logger.info(
             "[STOCKS_WS] feed_diag ws_url=%s shard=%d connected=%s auth=%s "
-            "subscribed_channels=%d t=%d q=%d symbols=%d first_msg=%s last_msg=%s "
-            "last_msg_age=%s reconnect_count=%d feed_state=%s last_error=%s",
+            "bootstrap_snapshot_count=%d bootstrap_symbols_count=%d "
+            "requested_channels_count=%d provider_subscription_ack=%s "
+            "subscribed_channels=%d t=%d q=%d symbols=%d "
+            "first_ws_message_time=%s last_ws_message_time=%s last_msg_age=%s "
+            "trades_received=%d quotes_received=%d aggregates_received=%d "
+            "reconnect_count=%d stale_failure_count=%d feed_state=%s last_error=%s",
             POLYGON_WS_URL,
             shard.shard_id,
             shard.connected,
             shard.authenticated,
+            st.bootstrap_snapshot_count,
+            st.bootstrap_symbols_count,
+            st.requested_channels_count,
+            st.provider_subscription_ack,
             len(shard.subscribed_channels),
             st.t_channel_count,
             st.q_channel_count,
@@ -504,7 +511,11 @@ class StocksWsHub:
             first,
             age,
             f"{msg_age:.1f}s" if msg_age is not None else "none",
+            st.trades_received,
+            st.quotes_received,
+            st.aggregates_received,
             st.reconnect_count,
+            st.stale_failure_count,
             live_price_registry.feed_state(),
             st.last_error or "none",
         )
@@ -565,6 +576,7 @@ class StocksWsHub:
                     shard.had_successful_session = True
                     shard.subscribed_at_mono = None
                     shard.last_market_message_mono = None
+                    live_price_registry.set_provider_subscription_ack(False)
                     live_price_registry.set_error("")
                     self._publish_registry_health()
                     logger.info(
@@ -577,9 +589,11 @@ class StocksWsHub:
                     if desired:
                         await self._send_batched(ws, "subscribe", sorted(desired))
                         shard.subscribed_channels = set(desired)
+                        live_price_registry.set_requested_channels_count(len(desired))
                         self._mark_subscribed(shard)
                         logger.info(
-                            "[STOCKS_WS] shard=%d initial_subscribe_ok channels=%d sample=%s",
+                            "[STOCKS_WS] shard=%d initial_subscribe_sent "
+                            "requested_channels_count=%d sample=%s",
                             shard.shard_id,
                             len(desired),
                             sorted(desired)[:6],
@@ -598,6 +612,7 @@ class StocksWsHub:
                                 shard.stale_reconnects += 1
                                 shard.last_error = reason[:200]
                                 live_price_registry.set_error(reason[:200])
+                                live_price_registry.note_stale_reconnect()
                                 logger.warning(
                                     "[STOCKS_WS] shard=%d stale_reconnect reason=%s",
                                     shard.shard_id,
@@ -619,6 +634,18 @@ class StocksWsHub:
                                 msg = str(ev.get("message", ""))
                                 st = ev.get("status", "")
                                 self._record_provider_status(f"{st}:{msg}")
+                                if st == "success" and "subscribed" in msg.lower():
+                                    live_price_registry.set_provider_subscription_ack(True, msg)
+                                    if shard.subscribed_at_mono is None:
+                                        shard.subscribed_at_mono = time.monotonic()
+                                    self._publish_registry_health()
+                                    logger.info(
+                                        "[STOCKS_WS] shard=%d provider_subscription_ack "
+                                        "channels=%d message=%s",
+                                        shard.shard_id,
+                                        len(shard.subscribed_channels),
+                                        msg[:80],
+                                    )
                             msg = str(data[0].get("message", ""))
                             st = data[0].get("status", "")
                             if st == "max_connections":

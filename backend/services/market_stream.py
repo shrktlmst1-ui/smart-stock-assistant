@@ -20,8 +20,9 @@ from services.market_scanner_service import market_scanner
 from services.opportunity_now_service import sync_engine_from_scanner
 from services.polygon_client import PolygonClient
 from services.stocks_ws_hub import stocks_ws_hub
+from services.ws_bootstrap_service import fetch_bootstrap_symbols
 from services.ws_bootstrap_symbols import bootstrap_symbols_from_snapshot
-from services.ws_feed_state import STALE
+from services.ws_feed_state import LIVE, STALE
 
 logger = logging.getLogger(__name__)
 
@@ -66,31 +67,35 @@ class MarketStream:
         if use_ws:
             self.mode = "websocket_scanner"
             stocks_ws_hub.add_raw_handler(self._handle_ws_payload)
-            await stocks_ws_hub.start()
+            boot_syms: list[str] = []
+            try:
+                boot_syms, snap_count, snap_raw = await fetch_bootstrap_symbols()
+                if snap_raw:
+                    market_scanner._snapshot_raw = snap_raw
+                    market_scanner.universe_size = snap_count
+            except Exception as exc:
+                logger.error("[WS_BOOTSTRAP] fetch_failed error=%s", type(exc).__name__)
             await live_feed_pipeline.start()
+            await stocks_ws_hub.start()
             self._hub_started = True
+            symbols = boot_syms or self._monitor_symbols()
+            if symbols:
+                stocks_ws_hub.set_consumer("jump", symbols, ("T", "Q", "A"))
+                live_confirmation_engine.set_monitor_symbols(symbols)
+                logger.info(
+                    "[WS_BOOTSTRAP] jump_consumer symbols=%d sample=%s",
+                    len(symbols),
+                    symbols[:8],
+                )
+            else:
+                logger.error(
+                    "[WS_BOOTSTRAP] bootstrap_symbols_count=0 — jump consumer not configured"
+                )
             live_confirmation_engine.set_ws_status(connected=True, fallback=False)
         else:
             self.mode = "scanner_rest"
 
-        symbols = self._monitor_symbols()
-        if use_ws:
-            if symbols:
-                stocks_ws_hub.set_consumer("jump", symbols, ("T", "Q"))
-                live_confirmation_engine.set_monitor_symbols(symbols)
-            elif market_scanner._snapshot_raw:
-                from services.universe_manager import universe_manager
-
-                boot = bootstrap_symbols_from_snapshot(
-                    market_scanner._snapshot_raw,
-                    universe_manager.symbol_set,
-                )
-                if boot:
-                    stocks_ws_hub.set_consumer("jump", boot, ("T", "Q"))
-                    live_confirmation_engine.set_monitor_symbols(boot)
-                    logger.info("[LIVE_PRICE] bootstrap WS jump symbols=%d", len(boot))
-
-        monitor_count = len(stocks_ws_hub.get_consumer_symbols("jump"))
+        monitor_count = len(stocks_ws_hub.get_consumer_symbols("jump")) if use_ws else 0
         logger.info(
             "Institutional scanner stream: mode=%s tick=%ss monitor_symbols=%d hub=%s",
             self.mode,

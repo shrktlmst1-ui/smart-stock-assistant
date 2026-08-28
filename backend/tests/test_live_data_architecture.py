@@ -141,6 +141,7 @@ class TestLiveDataGate:
         live_price_registry._status.aggregates_subscribed = True
         live_price_registry._status.t_channel_count = 2
         live_price_registry._status.q_channel_count = 2
+        live_price_registry._status.provider_subscription_ack = True
         live_price_registry.note_message_received()
         for _ in range(150):
             gate.metrics.note_aggregate()

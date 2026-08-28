@@ -128,6 +128,9 @@ class LiveFeedPipeline:
             )
             self.stats.aggregates += 1
             live_data_gate.metrics.note_aggregate()
+            from services.live_price_registry import live_price_registry
+
+            live_price_registry.note_aggregate_received()
             wave = aggregate_wave_tracker.get(sym)
             if wave and wave.phase.value == "BUILDING" and sym not in self._deep_symbols:
                 self._deep_symbols.add(sym)

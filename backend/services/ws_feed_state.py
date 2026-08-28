@@ -41,13 +41,17 @@ def resolve_feed_state(
     subscribed: bool,
     last_message_at: datetime | None,
     subscribed_at_mono: float | None = None,
-    stale_threshold: float = WS_STALE_MESSAGE_SECONDS,
+    stale_failure_count: int = 0,
+    max_stale_failures: int = 3,
 ) -> FeedState:
     """Resolve feed state — LIVE only after a real market-data payload (not status)."""
+    if stale_failure_count >= max_stale_failures:
+        return DATA_UNAVAILABLE
     if not is_jump_engine_armed_session(session):  # type: ignore[arg-type]
         return DATA_UNAVAILABLE
     if not hub_running:
         return DATA_UNAVAILABLE
+    stale_threshold = WS_STALE_MESSAGE_SECONDS
     if not connected or not authenticated:
         return CONNECTING
     if not subscribed:

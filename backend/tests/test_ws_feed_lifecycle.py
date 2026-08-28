@@ -74,6 +74,54 @@ class TestFeedStateMachine:
         )
         assert state == STALE
 
+    def test_data_unavailable_after_repeated_stale_failures(self):
+        state = resolve_feed_state(
+            session="REGULAR",
+            hub_running=True,
+            connected=True,
+            authenticated=True,
+            subscribed=True,
+            last_message_at=None,
+            subscribed_at_mono=time.monotonic() - 20.0,
+            stale_failure_count=3,
+        )
+        assert state == DATA_UNAVAILABLE
+
+    def test_subscribed_requires_provider_ack_not_send_only(self):
+        live_price_registry._status.connected = True
+        live_price_registry._status.authenticated = True
+        live_price_registry._status.hub_running = True
+        live_price_registry._status.t_channel_count = 10
+        live_price_registry._status.q_channel_count = 10
+        live_price_registry._status.provider_subscription_ack = False
+        live_price_registry._status.subscribed_at_mono = time.monotonic()
+        assert live_price_registry.feed_state() != LIVE
+        from services.ws_feed_state import AUTHENTICATED
+
+        assert live_price_registry.feed_state() == AUTHENTICATED
+
+    def test_symbols_zero_not_live_or_armed(self):
+        live_price_registry._status.connected = True
+        live_price_registry._status.authenticated = True
+        live_price_registry._status.hub_running = True
+        live_price_registry._status.bootstrap_symbols_count = 0
+        live_price_registry._status.t_channel_count = 0
+        live_price_registry._status.q_channel_count = 0
+        assert live_price_registry.feed_state() != LIVE
+        mon = JumpEngineMonitor()
+        with patch("services.jump_engine_monitor.get_us_market_session", return_value="REGULAR"):
+            mon.tick_started(
+                scanner_task_alive=True,
+                feed_state=live_price_registry.feed_state(),
+                websocket_connected=True,
+                last_ws_message_time="",
+                last_message_age_seconds=None,
+                reconnect_count=0,
+                refresh_in_progress=False,
+                refresh_skipped=0,
+            )
+        assert mon.get_snapshot().jump_engine_status != LIVE
+
     def test_jump_monitor_not_live_without_message(self):
         mon = JumpEngineMonitor()
         with patch("services.jump_engine_monitor.get_us_market_session", return_value="REGULAR"):
@@ -164,6 +212,46 @@ class TestBootstrapSymbols:
             symbols = bootstrap_symbols_from_snapshot(raw, {"AAA", "BBB"}, min_volume=50_000)
         assert symbols[0] == "AAA"
         assert "AAA" in symbols
+
+    def test_bootstrap_day_bar_fallback_without_live_trade(self):
+        raw = {
+            "CCC": {
+                "ticker": "CCC",
+                "day": {"c": 3.0, "h": 3.05, "l": 2.95, "v": 600_000, "o": 2.9},
+                "prevDay": {"c": 2.8, "v": 100_000},
+            },
+        }
+        with patch("services.ws_bootstrap_symbols.resolve_session_price") as mock_sp:
+            from services.session_price import SessionPrice
+
+            mock_sp.return_value = SessionPrice(
+                price=0.0,
+                volume=0,
+                change=0.0,
+                change_percent=0.0,
+                timestamp=None,
+                session="REGULAR",
+                source="none",
+                is_stale=True,
+                stale_reason="no_data",
+            )
+            symbols = bootstrap_symbols_from_snapshot(raw, {"CCC"}, min_volume=50_000)
+        assert symbols == ["CCC"]
+
+
+class TestMarketStreamLiveImport:
+    def test_scanner_tick_references_live_constant(self):
+        import services.market_stream as ms
+
+        assert ms.LIVE == "LIVE"
+        live_price_registry._status.connected = True
+        live_price_registry._status.authenticated = True
+        live_price_registry._status.hub_running = True
+        live_price_registry._status.provider_subscription_ack = True
+        live_price_registry._status.t_channel_count = 2
+        live_price_registry._status.q_channel_count = 2
+        live_price_registry._status.last_message_at = datetime.now(timezone.utc)
+        assert live_price_registry.feed_state() == ms.LIVE
 
 
 class TestRegularLiquidityRvol:
