@@ -10,6 +10,7 @@ from models.opportunity_now import OpportunityNowResponse, OpportunityNowSignal
 from models.pre_move import PreMoveSignal
 from models.premarket_opportunity import PremarketOpportunitySignal, PremarketScanResult
 from models.stock import StockSnapshot
+from services.live_data_gate import LIVE_DATA_UNAVAILABLE, live_data_gate
 from services.extended_hours_gap_detector import (
     ExtendedGapDetection,
     extended_gap_registry,
@@ -626,6 +627,40 @@ def _premarket_to_opportunity_signal(pm: PremarketOpportunitySignal) -> Opportun
 
 
 
+def _merge_aggregate_distinguished(
+    existing: list[OpportunityNowSignal],
+) -> list[OpportunityNowSignal]:
+    """Augment distinguished list from A.* wave tracker — live feed only."""
+    from services.aggregate_wave_tracker import aggregate_wave_tracker
+    from services.executed_buy_pressure import executed_buy_pressure_registry
+    from models.signal_snapshot import build_snapshot_from_wave_and_pressure
+
+    seen = {s.symbol.upper() for s in existing}
+    out = list(existing)
+    for sym in aggregate_wave_tracker.eligible_distinguished_symbols():
+        if sym in seen:
+            continue
+        wave = aggregate_wave_tracker.get(sym)
+        if wave is None:
+            continue
+        pressure = executed_buy_pressure_registry.get(sym)
+        snap = build_snapshot_from_wave_and_pressure(
+            sym,
+            wave=wave,
+            pressure=pressure,
+            baseline_rvol=1.0,
+            live_feed_valid=True,
+            data_age_ms=live_data_gate.metrics.aggregate_age_seconds * 1000,
+        )
+        sig = snap.to_opportunity_signal()
+        if sig:
+            sig.display_type = "DISTINGUISHED_PRICE_JUMP"
+            out.append(sig)
+            seen.add(sym)
+    out.sort(key=lambda s: (s.real_jump_current_move_pct, s.real_jump_move_start_time or ""), reverse=True)
+    return out
+
+
 def sync_engine_from_scanner() -> None:
     sync_extended_gap_detector()
     monitor = live_confirmation_engine._monitor_symbols or market_scanner._rank_pool[:LIVE_MONITOR_POOL]
@@ -653,12 +688,25 @@ def get_opportunity_now() -> OpportunityNowResponse:
 
         sync_engine_from_scanner()
 
-        jump_alerts = _collect_jump_alerts(session)
-        display_signals = _collect_home_display_signals(session)
-        real_jump_alerts = _collect_real_jump_alerts(session)
-        distinguished_jump_alerts = _collect_distinguished_jump_alerts(session)
+        feed_valid = live_data_gate.live_feed_valid
+        jump_alerts: list[OpportunityNowSignal] = []
+        display_signals: list[OpportunityNowSignal] = []
+        real_jump_alerts: list[OpportunityNowSignal] = []
+        distinguished_jump_alerts: list[OpportunityNowSignal] = []
+        none_message = "لا يوجد شراء قوي فعلي الآن"
+
+        if feed_valid:
+            jump_alerts = _collect_jump_alerts(session)
+            display_signals = _collect_home_display_signals(session)
+            real_jump_alerts = _collect_real_jump_alerts(session)
+            distinguished_jump_alerts = _collect_distinguished_jump_alerts(session)
+            distinguished_jump_alerts = _merge_aggregate_distinguished(distinguished_jump_alerts)
+        elif session in ("PRE_MARKET", "REGULAR", "AFTER_HOURS"):
+            none_message = LIVE_DATA_UNAVAILABLE
+            message = LIVE_DATA_UNAVAILABLE
+
         engine_snap = jump_engine_monitor.get_snapshot()
-        jump_engine_status = engine_snap.jump_engine_status
+        jump_engine_status = live_data_gate.jump_engine_status if session in ("PRE_MARKET", "REGULAR", "AFTER_HOURS") else engine_snap.jump_engine_status
 
         premarket_scan: PremarketScanResult | None = None
         if session == "PRE_MARKET":
@@ -666,18 +714,19 @@ def get_opportunity_now() -> OpportunityNowResponse:
 
             premarket_scan = get_last_premarket_scan()
 
-        best = live_confirmation_engine.best_candidate(market_open=market_open)
+        best = live_confirmation_engine.best_candidate(market_open=market_open) if feed_valid else None
         signals: list[OpportunityNowSignal] = []
-        for cand in live_confirmation_engine._candidates.values():
-            ext = extended_gap_registry.get(cand.symbol)
-            if cand.last_price <= 0:
-                continue
-            if ext or (cand.score > 0 and cand.status in ("WATCH", "READY", "NOW", "CANCELLED")):
-                sig = _candidate_to_signal(cand)
-                if sig.price > 0 and (sig.score > 0 or sig.extended_gap_pct > 0):
-                    signals.append(sig)
+        if feed_valid:
+            for cand in live_confirmation_engine._candidates.values():
+                ext = extended_gap_registry.get(cand.symbol)
+                if cand.last_price <= 0:
+                    continue
+                if ext or (cand.score > 0 and cand.status in ("WATCH", "READY", "NOW", "CANCELLED")):
+                    sig = _candidate_to_signal(cand)
+                    if sig.price > 0 and (sig.score > 0 or sig.extended_gap_pct > 0):
+                        signals.append(sig)
 
-        if premarket_scan:
+        if feed_valid and premarket_scan:
             for pm in premarket_scan.opportunities + premarket_scan.watches:
                 sig = _premarket_to_opportunity_signal(pm)
                 if sig.price > 0:
@@ -723,8 +772,8 @@ def get_opportunity_now() -> OpportunityNowResponse:
         )
         live_source = (
             "websocket"
-            if live_confirmation_engine.ws_connected and not live_confirmation_engine.ws_fallback
-            else "rest"
+            if feed_valid and live_confirmation_engine.ws_connected and not live_confirmation_engine.ws_fallback
+            else LIVE_DATA_UNAVAILABLE if session in ("PRE_MARKET", "REGULAR", "AFTER_HOURS") else "rest"
         )
 
         return OpportunityNowResponse(

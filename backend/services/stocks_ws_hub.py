@@ -40,6 +40,7 @@ RawHandler = Callable[[list | dict], Awaitable[None] | None]
 class ConsumerSpec:
     symbols: set[str] = field(default_factory=set)
     channel_types: tuple[str, ...] = ("T", "Q")
+    wildcards: tuple[str, ...] = ()
 
 
 @dataclass
@@ -110,12 +111,20 @@ class StocksWsHub:
         consumer_id: str,
         symbols: list[str],
         channel_types: tuple[str, ...] = ("T", "Q"),
+        wildcards: tuple[str, ...] = (),
     ) -> None:
         sym_set = {s.upper() for s in symbols if s}
         prev = self._consumers.get(consumer_id)
-        if prev and prev.symbols == sym_set and prev.channel_types == channel_types:
+        if (
+            prev
+            and prev.symbols == sym_set
+            and prev.channel_types == channel_types
+            and prev.wildcards == wildcards
+        ):
             return
-        self._consumers[consumer_id] = ConsumerSpec(symbols=sym_set, channel_types=channel_types)
+        self._consumers[consumer_id] = ConsumerSpec(
+            symbols=sym_set, channel_types=channel_types, wildcards=wildcards,
+        )
         self._recompute_symbol_universe()
         self._needs_sync = True
         self._schedule_consumer_sync()
@@ -160,7 +169,13 @@ class StocksWsHub:
         channels: set[str] = set()
         for spec in self._consumers.values():
             channels |= _channels_for_symbols(spec.symbols, spec.channel_types)
+            for wc in spec.wildcards:
+                channels.add(wc)
         return channels
+
+    def get_consumer_symbols(self, consumer_id: str) -> list[str]:
+        spec = self._consumers.get(consumer_id)
+        return sorted(spec.symbols) if spec else []
 
     def status_dict(self) -> dict:
         connected = sum(1 for s in self._shards if s.connected)
@@ -298,6 +313,8 @@ class StocksWsHub:
             relevant = spec.symbols & sym_set
             if relevant:
                 channels |= _channels_for_symbols(relevant, spec.channel_types)
+            if shard.shard_id == 0 and spec.wildcards:
+                channels |= set(spec.wildcards)
         return channels
 
     async def _send_batched(
@@ -350,6 +367,16 @@ class StocksWsHub:
             shards_total=len(self._shards),
             subscribed=subscribed_syms,
         )
+        from services.live_data_gate import live_data_gate
+
+        has_a = any("A.*" in ch or ch.startswith("A.") for s in self._shards for ch in s.subscribed_channels)
+        live_data_gate.set_ws_health(
+            connected=connected > 0,
+            authenticated=connected > 0,
+            aggregates_subscribed=has_a,
+        )
+        if connected > 0:
+            live_data_gate.metrics.reconnect_count = sum(s.reconnect_count for s in self._shards)
 
     def _backoff_for_error(self, err: str, current: float) -> float:
         err_l = err.lower()

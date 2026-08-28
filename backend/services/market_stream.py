@@ -11,6 +11,8 @@ from typing import Awaitable, Callable
 from config import SCANNER_TICK_SECONDS, WEBSOCKET_ENABLED, get_polygon_api_key
 from services.connection_service import get_connection_status
 from services.jump_engine_monitor import jump_engine_monitor
+from services.live_feed_pipeline import live_feed_pipeline
+from services.live_data_gate import live_data_gate, LIVE_DATA_UNAVAILABLE
 from services.live_confirmation_engine import live_confirmation_engine
 from services.live_price_registry import live_price_registry
 from services.market_scanner_service import market_scanner
@@ -62,6 +64,7 @@ class MarketStream:
             self.mode = "websocket_scanner"
             stocks_ws_hub.add_raw_handler(self._handle_ws_payload)
             await stocks_ws_hub.start()
+            await live_feed_pipeline.start()
             self._hub_started = True
             live_confirmation_engine.set_ws_status(connected=True, fallback=False)
         else:
@@ -86,6 +89,7 @@ class MarketStream:
         if self._hub_started:
             stocks_ws_hub.remove_raw_handler(self._handle_ws_payload)
             stocks_ws_hub.clear_consumer("jump")
+            await live_feed_pipeline.stop()
             await stocks_ws_hub.stop()
             self._hub_started = False
         for task in (self._tick_task, self._watchdog_task):
@@ -207,7 +211,7 @@ class MarketStream:
                     symbols = self._monitor_symbols()
                     stocks_ws_hub.set_consumer("jump", symbols, ("T", "Q"))
                     live_confirmation_engine.set_monitor_symbols(symbols)
-                    ws_ok = live_price_registry.status.connected
+                    ws_ok = live_price_registry.status.connected and live_data_gate.live_feed_valid
                     live_confirmation_engine.set_ws_status(connected=ws_ok, fallback=not ws_ok)
 
                 state = await market_scanner.run_fast_tick()
