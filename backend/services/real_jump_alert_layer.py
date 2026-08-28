@@ -13,11 +13,21 @@ from analysis.early_upward_surge import (
     RealJumpEarlyDetectionKPI,
     RealJumpWaveSnapshot,
     RealPriceJumpVerdict,
+    WAVE_STATE_ACTIVE_UPWARD,
+    WAVE_STATE_ENDED_LABEL,
+    compute_real_jump_entry_status,
     derive_real_jump_wave,
     evaluate_real_jump_alert,
+    evaluate_real_jump_live_exit,
     fast_filter_surge_rank,
 )
-from config import PREMOVE_DATA_MAX_AGE_SECONDS, PREMOVE_MIN_LIQUIDITY_SCORE
+from config import (
+    PREMOVE_DATA_MAX_AGE_SECONDS,
+    PREMOVE_MIN_LIQUIDITY_SCORE,
+    REAL_JUMP_REARM_MIN_EXPANSION_PCT,
+    REAL_JUMP_REARM_MIN_MINUTES,
+    REAL_JUMP_WAVE_END_SIGNALS_REQUIRED,
+)
 from models.opportunity_now import OpportunityNowSignal
 from models.pre_move import PreMoveSignal
 from services.display_buy_pressure_filter import context_from_premove, context_from_opportunity_signal
@@ -76,11 +86,15 @@ class _LockedWave:
     low_velocity_minutes: float = 0.0
     low_vol_accel_minutes: float = 0.0
     extended_mode: bool = False  # locked after wave_peak_move_pct crosses +100%
+    end_signal_streak: int = 0
+    wave_end_time: datetime | None = None
 
 
 @dataclass
 class _SymbolWaveHistory:
     prior_wave: RealJumpWaveSnapshot | None = None
+    prior_ended_peak: float = 0.0
+    prior_wave_end_time: datetime | None = None
     locked: _LockedWave = field(default_factory=_LockedWave)
     samples: deque[tuple[datetime, float]] = field(default_factory=lambda: deque(maxlen=WAVE_SAMPLE_MAX))
     bar_timestamps: deque[datetime] = field(default_factory=lambda: deque(maxlen=8))
@@ -246,6 +260,12 @@ class RealJumpWaveTracker:
         ]
         return sum(signals)
 
+    def _retrace_from_peak_fraction(self, locked: _LockedWave, current_price: float) -> float:
+        peak = max(locked.wave_peak_price, current_price)
+        if peak <= 0:
+            return 0.0
+        return max(0.0, (peak - current_price) / peak)
+
     def _apply_lifecycle(
         self,
         locked: _LockedWave,
@@ -286,6 +306,21 @@ class RealJumpWaveTracker:
             (current_price - locked.move_start_price) / locked.move_start_price * 100.0
             if locked.move_start_price > 0 else 0.0
         )
+        peak_move_pct = (
+            (max(locked.wave_peak_price, current_price) - locked.move_start_price)
+            / locked.move_start_price * 100.0
+            if locked.move_start_price > 0 else 0.0
+        )
+
+        # After first REAL_JUMP detection: do not split wave until meaningful retrace
+        if locked.first_detected_time and peak_move_pct >= 15.0 and not hard_break:
+            retrace_frac = self._retrace_from_peak_fraction(locked, current_price)
+            if retrace_frac < 0.35:
+                if locked.wave_state == WAVE_STATE_COOLING:
+                    locked.wave_state = WAVE_STATE_ACTIVE
+                    locked.cooling_since = None
+                locked.end_signal_streak = 0
+                return
 
         # After +100% peak: hold same wave through consolidation until meaningful give-back
         if locked.extended_mode and current_move_pct >= 20.0 and not hard_break:
@@ -307,16 +342,34 @@ class RealJumpWaveTracker:
             if momentum and made_higher_high and end_count < active_to_cooling:
                 locked.wave_state = WAVE_STATE_ACTIVE
                 locked.cooling_since = None
+                locked.end_signal_streak = 0
                 return
             cooling_min = self._minutes_since(locked.cooling_since, timestamp)
-            if end_count >= cooling_to_end or (cooling_min >= cooling_min_limit and end_count >= active_to_cooling):
-                locked.wave_state = WAVE_STATE_ENDED
-                locked.reset_reason = "lifecycle_ended"
+            if end_count >= REAL_JUMP_WAVE_END_SIGNALS_REQUIRED - 1:
+                locked.end_signal_streak += 1
+            else:
+                locked.end_signal_streak = max(0, locked.end_signal_streak - 1)
+            peak = max(locked.wave_peak_price, current_price)
+            retrace_frac = self._retrace_from_peak_fraction(locked, current_price)
+            allow_end = (
+                hard_break
+                or retrace_frac >= 0.35
+                or (not locked.first_detected_time and end_count >= cooling_to_end)
+            )
+            if allow_end and (
+                end_count >= cooling_to_end
+                or (cooling_min >= cooling_min_limit and end_count >= active_to_cooling)
+            ):
+                if locked.end_signal_streak >= 2 or hard_break or retrace_frac >= 0.40:
+                    locked.wave_state = WAVE_STATE_ENDED
+                    locked.reset_reason = "lifecycle_ended"
+                    locked.wave_end_time = timestamp
 
     def _snapshot_from_locked(
         self,
         symbol: str,
         locked: _LockedWave,
+        hist: _SymbolWaveHistory,
         *,
         current_price: float,
         acc_1m: float,
@@ -327,6 +380,7 @@ class RealJumpWaveTracker:
         ms = locked.move_start_price
         current_move_pct = (current_price - ms) / ms * 100.0 if ms > 0 else 0.0
         active = locked.wave_state in (WAVE_STATE_ACTIVE, WAVE_STATE_COOLING)
+        display_state = WAVE_STATE_ACTIVE_UPWARD if active else WAVE_STATE_ENDED_LABEL
         wave = RealJumpWaveSnapshot(
             move_start_time=locked.move_start_time,
             move_start_price=ms,
@@ -343,8 +397,11 @@ class RealJumpWaveTracker:
             wave_active=active,
             wave_ended=locked.wave_state == WAVE_STATE_ENDED,
             is_new_wave=is_new,
-            wave_state=locked.wave_state,
+            wave_state=display_state,
             reset_reason=locked.reset_reason,
+            wave_end_time=locked.wave_end_time,
+            prior_ended_peak=hist.prior_ended_peak,
+            prior_wave_end_time=hist.prior_wave_end_time,
         )
         return wave
 
@@ -414,26 +471,80 @@ class RealJumpWaveTracker:
                 acc_3m=acc_3m,
                 acc_5m=acc_5m,
             )
+            if locked.wave_state == WAVE_STATE_ENDED:
+                locked.wave_end_time = locked.wave_end_time or ts
+                hist.prior_ended_peak = max(hist.prior_ended_peak, locked.wave_peak_price)
+                hist.prior_wave_end_time = locked.wave_end_time
             wave = self._snapshot_from_locked(
-                symbol, locked, current_price=current_price,
+                symbol, locked, hist, current_price=current_price,
                 acc_1m=acc_1m, acc_3m=acc_3m, acc_5m=acc_5m, is_new=False,
             )
             hist.prior_wave = wave
             return wave
 
-        # ENDED or no wave — start new only on clear upward momentum
+        # ENDED or no wave — re-arm only after prior wave fully ended + new expansion
         if locked.wave_state == WAVE_STATE_ENDED or locked.move_start_price <= 0:
+            retrace_frac = self._retrace_from_peak_fraction(locked, current_price)
+            hard_break = locked.move_start_price > 0 and current_price < locked.move_start_price * WAVE_STRUCTURE_BREAK_PCT
+            if (
+                locked.wave_state == WAVE_STATE_ENDED
+                and locked.first_detected_time
+                and retrace_frac < 0.35
+                and not hard_break
+            ):
+                locked.wave_state = WAVE_STATE_ACTIVE
+                locked.wave_end_time = None
+                locked.reset_reason = ""
+                locked.end_signal_streak = 0
+                locked.cooling_since = None
+                wave = self._snapshot_from_locked(
+                    symbol, locked, hist, current_price=current_price,
+                    acc_1m=acc_1m, acc_3m=acc_3m, acc_5m=acc_5m, is_new=False,
+                )
+                hist.prior_wave = wave
+                return wave
+
+            had_prior_wave = hist.prior_wave_end_time is not None
+            if locked.wave_state == WAVE_STATE_ENDED and had_prior_wave:
+                hist.prior_ended_peak = max(hist.prior_ended_peak, locked.wave_peak_price)
+                if locked.wave_end_time:
+                    hist.prior_wave_end_time = locked.wave_end_time
+            minutes_since_end = self._minutes_since(hist.prior_wave_end_time, ts)
+            if had_prior_wave and minutes_since_end < REAL_JUMP_REARM_MIN_MINUTES:
+                wave = self._snapshot_from_locked(
+                    symbol, locked, hist, current_price=current_price,
+                    acc_1m=acc_1m, acc_3m=acc_3m, acc_5m=acc_5m, is_new=False,
+                )
+                hist.prior_wave = wave
+                return wave
+
             ms_candidate, ms_time = self._detect_new_move_start(
                 bars, hist.samples, current_price, ts,
             )
             if ms_candidate <= 0:
                 ms_candidate = current_price
                 ms_time = ts
+            if had_prior_wave and hist.prior_wave_end_time and ms_time and ms_time <= hist.prior_wave_end_time:
+                wave = self._snapshot_from_locked(
+                    symbol, locked, hist, current_price=current_price,
+                    acc_1m=acc_1m, acc_3m=acc_3m, acc_5m=acc_5m, is_new=False,
+                )
+                hist.prior_wave = wave
+                return wave
             tentative_pct = (
                 (current_price - ms_candidate) / ms_candidate * 100.0 if ms_candidate > 0 else 0.0
             )
-            min_pct_for_new = 5.0 if hist.prior_wave and hist.prior_wave.first_detected_time else 2.0
-            if momentum and tentative_pct >= min_pct_for_new:
+            prior_peak = hist.prior_ended_peak
+            new_hh = prior_peak <= 0 or current_price >= prior_peak * 1.02 or made_hh
+            min_pct_for_new = REAL_JUMP_REARM_MIN_EXPANSION_PCT if had_prior_wave else 2.0
+            if locked.first_detected_time and locked.wave_state != WAVE_STATE_ENDED:
+                wave = self._snapshot_from_locked(
+                    symbol, locked, hist, current_price=current_price,
+                    acc_1m=acc_1m, acc_3m=acc_3m, acc_5m=acc_5m, is_new=False,
+                )
+                hist.prior_wave = wave
+                return wave
+            if momentum and tentative_pct >= min_pct_for_new and (new_hh or not had_prior_wave):
                 locked.wave_id = _wave_id(symbol, RealJumpWaveSnapshot(
                     move_start_price=ms_candidate, move_start_time=ms_time,
                 ))
@@ -452,13 +563,15 @@ class RealJumpWaveTracker:
                 locked.first_detected_price = 0.0
                 locked.first_detected_pct = 0.0
                 locked.extended_mode = False
+                locked.end_signal_streak = 0
+                locked.wave_end_time = None
                 is_new = True
 
         if locked.wave_state == WAVE_STATE_ACTIVE:
             locked.wave_peak_price = max(locked.wave_peak_price, current_price)
 
         wave = self._snapshot_from_locked(
-            symbol, locked, current_price=current_price,
+            symbol, locked, hist, current_price=current_price,
             acc_1m=acc_1m, acc_3m=acc_3m, acc_5m=acc_5m, is_new=is_new,
         )
         hist.prior_wave = wave
@@ -535,23 +648,106 @@ class RealJumpAlertRegistry:
         current_price: float = 0.0,
         timestamp: datetime | None = None,
         session_prev_close: float = 0.0,
+        price_volume_response: float = 0.0,
+        trade_velocity_growth: float | None = None,
+        trade_velocity: float | None = None,
+        volume_acceleration_1m: float = 0.0,
+        spread_pct: float = 99.0,
+        liquidity_score: float = 0.0,
+        bars: pd.DataFrame | None = None,
     ) -> RealJumpProcessResult:
         sym = symbol.upper()
         ts = timestamp or datetime.now(timezone.utc)
         out = RealJumpProcessResult(verdict=verdict)
         existing = self._alerts.get(sym)
+        hist = real_jump_wave_tracker._get(sym)
+        locked = hist.locked
 
-        if not verdict.confirmed or wave.wave_ended or not wave.wave_active:
-            if existing and (wave.wave_ended or not wave.wave_active):
+        if locked.move_start_price <= 0 and wave.wave_active and wave.move_start_price > 0:
+            locked.move_start_price = wave.move_start_price
+            locked.move_start_time = wave.move_start_time
+            locked.wave_state = WAVE_STATE_ACTIVE
+            locked.wave_id = wave.wave_id or _wave_id(sym, wave)
+            locked.wave_peak_price = max(wave.wave_peak_price, current_price)
+
+        locked.wave_peak_price = max(locked.wave_peak_price, wave.wave_peak_price, current_price)
+        wave.wave_peak_price = locked.wave_peak_price
+
+        is_update = existing is not None
+        entry_status = compute_real_jump_entry_status(
+            wave=wave,
+            spread_pct=spread_pct,
+            liquidity_score=liquidity_score,
+            is_alert_update=is_update,
+        )
+        verdict.entry_status = entry_status
+        wave.entry_status = entry_status
+
+        if locked.wave_state == WAVE_STATE_ENDED and locked.move_start_price > 0:
+            if existing:
                 out.clear = True
                 self._alerts.pop(sym, None)
+                return out
+            if not (verdict.confirmed and wave.is_new_wave and wave.wave_active):
+                wave.wave_state = WAVE_STATE_ENDED_LABEL
+                wave.wave_ended = True
+                wave.wave_active = False
+                return out
+            locked.wave_id = wave.wave_id or _wave_id(sym, wave)
+            locked.move_start_price = wave.move_start_price
+            locked.move_start_time = wave.move_start_time
+            locked.wave_state = WAVE_STATE_ACTIVE
+            locked.wave_peak_price = max(wave.wave_peak_price, current_price)
+            locked.first_detected_time = None
+            locked.first_detected_price = 0.0
+            locked.first_detected_pct = 0.0
+            locked.wave_end_time = None
+            locked.end_signal_streak = 0
+            locked.reset_reason = ""
+
+        if existing and wave.wave_ended:
+            locked.wave_state = WAVE_STATE_ENDED
+            locked.wave_end_time = ts
+            hist.prior_ended_peak = max(hist.prior_ended_peak, locked.wave_peak_price)
+            hist.prior_wave_end_time = ts
+            wave.wave_state = WAVE_STATE_ENDED_LABEL
+            out.clear = True
+            self._alerts.pop(sym, None)
             return out
 
-        wid = wave.wave_id or _wave_id(sym, wave)
-        if existing and existing.wave_id == wid:
+        wave.wave_state = WAVE_STATE_ACTIVE_UPWARD
+        wave.wave_active = True
+        wave.wave_ended = False
+
+        if existing:
+            should_end, end_reason, _ = evaluate_real_jump_live_exit(
+                wave=wave,
+                current_price=current_price,
+                price_volume_response=price_volume_response,
+                trade_velocity_growth=trade_velocity_growth,
+                trade_velocity=trade_velocity,
+                volume_acceleration_1m=volume_acceleration_1m,
+                spread_pct=spread_pct,
+                liquidity_score=liquidity_score,
+                bars=bars,
+                end_signal_streak=locked.end_signal_streak,
+            )
+            if should_end:
+                locked.wave_state = WAVE_STATE_ENDED
+                locked.wave_end_time = ts
+                locked.reset_reason = end_reason
+                hist.prior_ended_peak = max(hist.prior_ended_peak, locked.wave_peak_price)
+                hist.prior_wave_end_time = ts
+                wave.wave_state = WAVE_STATE_ENDED_LABEL
+                wave.wave_ended = True
+                wave.wave_active = False
+                wave.reset_reason = end_reason
+                out.clear = True
+                self._alerts.pop(sym, None)
+                return out
+
             existing.last_updated = ts
             existing.verdict = verdict
-            # Preserve immutable first detection from first alert
             if existing.kpi:
                 wave.first_detected_time = existing.kpi.first_detected_time
                 wave.first_detected_price = existing.kpi.first_detected_price
@@ -560,14 +756,21 @@ class RealJumpAlertRegistry:
                 wave, verdict, timestamp=ts, session_prev_close=session_prev_close, current_price=current_price,
             )
             verdict.is_alert_update = True
+            verdict.confirmed = True
             verdict.kpi = existing.kpi
             out.emit = True
             out.update_existing = True
             out.alert = existing
             return out
 
+        if not verdict.confirmed or wave.wave_ended or not wave.wave_active:
+            return out
+
+        wid = wave.wave_id or _wave_id(sym, wave)
+        if existing and existing.wave_id == wid:
+            return out
+
         if existing and existing.wave_id != wid and not wave.is_new_wave:
-            out.clear = False
             return out
 
         if wave.first_detected_time is None:
@@ -583,7 +786,6 @@ class RealJumpAlertRegistry:
             detected_time=wave.first_detected_time or ts,
             detected_price=wave.first_detected_price or current_price,
         )
-        # Sync locked values back onto wave after registry lock
         hist_locked = real_jump_wave_tracker._get(sym).locked
         wave.first_detected_time = hist_locked.first_detected_time
         wave.first_detected_price = hist_locked.first_detected_price
@@ -650,6 +852,7 @@ def evaluate_premove_real_jump(
         volume_acceleration_1m=ctx.volume_acceleration_1m,
     )
     news = getattr(sig, "news", None)
+    existing = real_jump_alert_registry.get(sig.symbol)
     verdict = evaluate_real_jump_alert(
         current_price=sig.current_price,
         change_pct=sig.change_percent,
@@ -681,6 +884,8 @@ def evaluate_premove_real_jump(
         news_catalyst_score=getattr(news, "news_catalyst_score", 0.0) if news else 0.0,
         premarket_gap_pct=_premarket_gap_pct(sig),
         catalyst_strength=getattr(news, "news_strength", 0.0) if news else 0.0,
+        data_age_seconds=float(sig.data_age_seconds or 0),
+        is_alert_update=existing is not None,
     )
     real_jump_alert_registry.process(
         sig.symbol,
@@ -688,6 +893,13 @@ def evaluate_premove_real_jump(
         wave=wave,
         current_price=sig.current_price,
         timestamp=timestamp,
+        price_volume_response=ctx.price_volume_response,
+        trade_velocity_growth=ctx.trade_velocity_growth,
+        trade_velocity=ea.trade_velocity,
+        volume_acceleration_1m=ctx.volume_acceleration_1m,
+        spread_pct=ctx.spread_pct,
+        liquidity_score=ctx.liquidity_score,
+        bars=bars,
     )
     return verdict
 
@@ -708,6 +920,7 @@ def evaluate_opportunity_real_jump(
         trade_velocity=0.0,
         volume_acceleration_1m=sig.volume_acceleration,
     )
+    existing = real_jump_alert_registry.get(sig.symbol)
     verdict = evaluate_real_jump_alert(
         current_price=sig.price,
         change_pct=sig.change_percent,
@@ -728,6 +941,8 @@ def evaluate_opportunity_real_jump(
         late_guard=False,
         bars=bars,
         wave=wave,
+        data_age_seconds=0.0,
+        is_alert_update=existing is not None,
     )
     real_jump_alert_registry.process(
         sig.symbol,
@@ -735,6 +950,12 @@ def evaluate_opportunity_real_jump(
         wave=wave,
         current_price=sig.price,
         timestamp=timestamp,
+        price_volume_response=ctx.price_volume_response,
+        trade_velocity_growth=ctx.trade_velocity_growth,
+        volume_acceleration_1m=sig.volume_acceleration,
+        spread_pct=ctx.spread_pct,
+        liquidity_score=max(ctx.liquidity_score, PREMOVE_MIN_LIQUIDITY_SCORE),
+        bars=bars,
     )
     return verdict
 
@@ -805,6 +1026,8 @@ def apply_real_jump_display(sig: OpportunityNowSignal, verdict: RealPriceJumpVer
     data["real_jump_wave_peak_price"] = round(wave_peak, 4)
     data["real_jump_wave_peak_move_pct"] = round(wave_peak_move, 3)
     data["real_jump_peak_after_detection_pct"] = round(peak_after, 3)
+    data["real_jump_wave_state"] = wave.wave_state if wave and wave.wave_state else WAVE_STATE_ACTIVE_UPWARD
+    data["real_jump_entry_status"] = getattr(verdict, "entry_status", "") or (wave.entry_status if wave else "")
     if is_explosive_wave(current_move_pct):
         data["detection_stage"] = "EXPLOSIVE"
     elif eligible_for_price_jump_section(kpi, current_move_pct=current_move_pct):

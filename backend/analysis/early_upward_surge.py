@@ -9,6 +9,17 @@ import pandas as pd
 
 from config import (
     PREMOVE_MIN_LIQUIDITY_SCORE,
+    REAL_JUMP_ABSOLUTE_MAX_SPREAD_PCT,
+    REAL_JUMP_ABSORPTION_LOOKBACK_BARS,
+    REAL_JUMP_ABSORPTION_RANGE_PCT,
+    REAL_JUMP_CONFLUENCE_SPREAD_CAP_PCT,
+    REAL_JUMP_HIGH_RVOL_ABSORPTION,
+    REAL_JUMP_NEAR_PEAK_TOLERANCE_PCT,
+    REAL_JUMP_POST_PEAK_MIN_BELOW_PCT,
+    REAL_JUMP_PRICE_RESPONSE_MIN_TICKS,
+    REAL_JUMP_PRIOR_RANGE_BLOCK_PCT,
+    REAL_JUMP_WAVE_END_CONFIRM_TICKS,
+    REAL_JUMP_WAVE_END_SIGNALS_REQUIRED,
     STAGE_BREAKOUT_NEAR_PCT,
     STAGE_EE_MAX_EXTENSION_PCT,
     STAGE_EE_MAX_SPREAD_PCT,
@@ -400,6 +411,19 @@ WAVE_STAGNANT_3M = 0.12
 WAVE_NEW_ACCEL_1M = 0.12
 WAVE_NEW_ACCEL_3M = 0.22
 
+WAVE_STATE_ACTIVE_UPWARD = "ACTIVE_UPWARD_WAVE"
+WAVE_STATE_ENDED_LABEL = "WAVE_ENDED"
+WAVE_STATE_TOO_LATE = "TOO_LATE_TO_CHASE"
+
+ENTRY_STATUS_ALLOWED = "ENTRY_ALLOWED"
+ENTRY_STATUS_TOO_LATE = "TOO_LATE_TO_CHASE"
+ENTRY_STATUS_BAD_SPREAD = "BAD_SPREAD"
+
+BUY_PRESSURE_SOURCE_EXECUTED = "EXECUTED_TRADES"
+BUY_PRESSURE_SOURCE_PROXY = "BUY_PRESSURE_PROXY"
+DATA_QUALITY_TICK = "TICK_TRADES"
+DATA_QUALITY_PROXY = "OHLCV_PROXY"
+
 
 @dataclass
 class RealJumpEarlyDetectionKPI:
@@ -434,7 +458,13 @@ class RealJumpWaveSnapshot:
     wave_ended: bool = False
     is_new_wave: bool = False
     wave_state: str = ""
+    entry_status: str = ENTRY_STATUS_ALLOWED
     reset_reason: str = ""
+    wave_end_time: datetime | None = None
+    prior_ended_peak: float = 0.0
+    prior_wave_end_time: datetime | None = None
+    buy_pressure_source: str = BUY_PRESSURE_SOURCE_PROXY
+    data_quality: str = DATA_QUALITY_PROXY
     kpi: RealJumpEarlyDetectionKPI | None = None
 
 
@@ -450,6 +480,9 @@ class RealPriceJumpVerdict:
     wave: RealJumpWaveSnapshot | None = None
     kpi: RealJumpEarlyDetectionKPI | None = None
     is_alert_update: bool = False
+    entry_status: str = ENTRY_STATUS_ALLOWED
+    buy_pressure_source: str = BUY_PRESSURE_SOURCE_PROXY
+    data_quality: str = DATA_QUALITY_PROXY
 
 
 def _wave_has_upward_momentum(acc_1m: float, acc_3m: float, acc_5m: float) -> bool:
@@ -794,6 +827,483 @@ def _bounce_after_drop(bars: pd.DataFrame | None, current_move_pct: float) -> bo
     return drop_pct >= 4.0 and rebound < drop_pct * 0.6 and current_move_pct < 8.0
 
 
+def _retrace_from_wave_peak(wave_peak: float, current_price: float) -> float:
+    if wave_peak <= 0 or current_price >= wave_peak:
+        return 0.0
+    return (wave_peak - current_price) / wave_peak * 100.0
+
+
+def _stalled_after_prior_peak(
+    *,
+    bars: pd.DataFrame | None,
+    wave: RealJumpWaveSnapshot,
+    current_price: float,
+    price_volume_response: float,
+    trade_velocity_growth: float | None,
+    volume_acceleration_1m: float,
+    rvol_same_time: float | None,
+) -> bool:
+    """Peak earlier, retraced, now sideways — weak buy flow (not a live jump)."""
+    peak = max(wave.wave_peak_price, current_price, wave.prior_ended_peak)
+    if bars is not None and len(bars) >= 5:
+        peak = max(peak, float(bars["high"].astype(float).max()))
+    if peak <= 0:
+        return False
+    retrace_pct = _retrace_from_wave_peak(peak, current_price)
+    if retrace_pct < 15.0:
+        return False
+    acc_1m = wave.price_acceleration_1m
+    acc_3m = wave.price_acceleration_3m
+    stagnant = _wave_is_stagnant(acc_1m, acc_3m) or acc_1m <= 0
+    weak_buy = price_volume_response < 0.32 and (trade_velocity_growth or 0) < 0.10
+    weak_vol = volume_acceleration_1m < STAGE_VOL_ACCEL_MIN * 0.85
+    weak_rvol = (rvol_same_time or 0) < STAGE_EE_MIN_RVOL * 0.70
+    in_old_range = peak > 0 and abs(current_price - peak) / peak * 100.0 <= REAL_JUMP_PRIOR_RANGE_BLOCK_PCT
+    if wave.prior_ended_peak > 0 and in_old_range and stagnant and (weak_buy or weak_vol):
+        return True
+    if retrace_pct >= 22.0 and stagnant and (weak_buy or weak_vol):
+        return True
+    if retrace_pct >= 30.0 and weak_buy and weak_rvol:
+        return True
+    return False
+
+
+def _post_peak_cooldown_block(
+    *,
+    bars: pd.DataFrame | None,
+    current_price: float,
+    wave: RealJumpWaveSnapshot,
+    price_volume_response: float,
+) -> bool:
+    """Session peak already printed; price lagging without fresh momentum."""
+    if bars is None or len(bars) < 20:
+        return False
+    highs = bars["high"].astype(float)
+    peak_val = float(highs.max())
+    if peak_val <= 0 or current_price >= peak_val * 0.93:
+        return False
+    peak_pos = int(highs.values.argmax())
+    bars_since_peak = len(highs) - peak_pos - 1
+    if bars_since_peak < 12:
+        return False
+    weak = not _wave_has_upward_momentum(
+        wave.price_acceleration_1m, wave.price_acceleration_3m, wave.price_acceleration_5m,
+    )
+    if current_price < peak_val * 0.94 and weak and price_volume_response < 0.45:
+        return True
+    return False
+
+
+def _session_stall_below_peak(
+    *,
+    bars: pd.DataFrame | None,
+    current_price: float,
+    wave: RealJumpWaveSnapshot,
+    price_volume_response: float,
+    rvol_same_time: float | None,
+) -> bool:
+    """Block alert when price sits below session high without live upward progress."""
+    if bars is None or len(bars) < 8:
+        return False
+    session_peak = float(bars["high"].astype(float).max())
+    if session_peak <= 0 or current_price >= session_peak * 0.96:
+        return False
+    below_peak_pct = (session_peak - current_price) / session_peak * 100.0
+    if below_peak_pct < 4.0:
+        return False
+    weak_momentum = not _wave_has_upward_momentum(
+        wave.price_acceleration_1m, wave.price_acceleration_3m, wave.price_acceleration_5m,
+    )
+    weak_buy = price_volume_response < 0.38
+    if below_peak_pct >= 5.0 and weak_momentum and weak_buy:
+        return True
+    if below_peak_pct >= 4.0 and weak_momentum and price_volume_response < 0.42:
+        return True
+    return False
+
+
+def _old_range_reactivation_blocked(
+    *,
+    wave: RealJumpWaveSnapshot,
+    current_price: float,
+    bars: pd.DataFrame | None,
+) -> bool:
+    """Block re-alert inside prior wave range without a genuine re-arm breakout."""
+    prior_peak = wave.prior_ended_peak
+    if prior_peak <= 0 or wave.wave_active:
+        return False
+    if wave.prior_wave_end_time is None:
+        return False
+    in_range = abs(current_price - prior_peak) / prior_peak * 100.0 <= REAL_JUMP_PRIOR_RANGE_BLOCK_PCT
+    if not in_range:
+        return False
+    new_hh = False
+    if bars is not None and len(bars) >= 3:
+        highs = bars["high"].astype(float)
+        new_hh = float(highs.iloc[-1]) > prior_peak * 1.015
+    elif current_price > prior_peak * 1.015:
+        new_hh = True
+    if new_hh and _wave_has_upward_momentum(
+        wave.price_acceleration_1m, wave.price_acceleration_3m, wave.price_acceleration_5m,
+    ):
+        return False
+    return True
+
+
+def _session_has_meaningful_new_high(
+    bars: pd.DataFrame | None,
+    current_price: float,
+    session_peak: float,
+) -> bool:
+    if session_peak <= 0:
+        return False
+    if current_price >= session_peak * 0.995:
+        return True
+    if bars is not None and len(bars) >= 1:
+        if float(bars["high"].astype(float).iloc[-1]) >= session_peak * 0.995:
+            return True
+    return False
+
+
+def _expansion_from_prior_high(bars: pd.DataFrame | None, current_price: float) -> float:
+    if bars is None or len(bars) < 3 or current_price <= 0:
+        return 0.0
+    lookback = min(REAL_JUMP_ABSORPTION_LOOKBACK_BARS, len(bars) - 1)
+    prior = bars.iloc[-lookback - 1:-1]
+    if prior.empty:
+        return 0.0
+    prior_high = float(prior["high"].astype(float).max())
+    if prior_high <= 0:
+        return 0.0
+    return (current_price - prior_high) / prior_high * 100.0
+
+
+def _post_peak_weak_momentum_reject(
+    *,
+    bars: pd.DataFrame | None,
+    current_price: float,
+    wave: RealJumpWaveSnapshot,
+    move_pct: float,
+    price_volume_response: float,
+    rvol_eff: float,
+    is_alert_update: bool,
+) -> bool:
+    """Reject bounce below session peak without a genuine new leg / breakout."""
+    if is_alert_update:
+        return False
+    if bars is None or len(bars) < 8:
+        return False
+    highs = bars["high"].astype(float)
+    session_peak = float(highs.max())
+    if session_peak <= 0 or _session_has_meaningful_new_high(bars, current_price, session_peak):
+        return False
+    below_peak_pct = (session_peak - current_price) / session_peak * 100.0
+    if below_peak_pct <= 0.5:
+        return False
+    peak_pos = int(highs.values.argmax())
+    if len(highs) - peak_pos - 1 < 5:
+        return False
+    expansion = _expansion_from_prior_high(bars, current_price)
+    if (
+        expansion >= 10.0
+        and move_pct >= 15.0
+        and current_price >= session_peak * 0.97
+        and _wave_has_upward_momentum(
+            wave.price_acceleration_1m, wave.price_acceleration_3m, wave.price_acceleration_5m,
+        )
+    ):
+        return False
+    if below_peak_pct <= 5.0:
+        return True
+    if below_peak_pct >= REAL_JUMP_POST_PEAK_MIN_BELOW_PCT:
+        return True
+    if rvol_eff >= STAGE_EE_MIN_RVOL * 2 and move_pct < 14.0 and below_peak_pct >= 4.0:
+        return True
+    return False
+
+
+def _post_stall_bad_spread_reject(
+    *,
+    bars: pd.DataFrame | None,
+    current_price: float,
+    wave: RealJumpWaveSnapshot,
+    spread_pct: float,
+    move_pct: float,
+    persistence_minutes: int,
+    micro_higher_lows: bool,
+    is_alert_update: bool,
+) -> bool:
+    """After prior spike + stall, block re-arm unless spread and breakout are tradable."""
+    if is_alert_update:
+        return False
+    if spread_pct > REAL_JUMP_ABSOLUTE_MAX_SPREAD_PCT:
+        return True
+    if spread_pct <= STAGE_EE_MAX_SPREAD_PCT:
+        return False
+    if bars is None or len(bars) < 10:
+        return spread_pct > STAGE_EE_MAX_SPREAD_PCT * 2
+    highs = bars["high"].astype(float)
+    session_peak = float(highs.max())
+    if session_peak <= 0:
+        return False
+    below_peak_pct = (session_peak - current_price) / session_peak * 100.0
+    if below_peak_pct < 5.0:
+        return False
+    peak_pos = int(highs.values.argmax())
+    bars_since_peak = len(highs) - peak_pos - 1
+    if bars_since_peak < 8:
+        return False
+    expansion = _expansion_from_prior_high(bars, current_price)
+    fresh_breakout = (
+        expansion >= 6.0
+        and _wave_has_upward_momentum(
+            wave.price_acceleration_1m, wave.price_acceleration_3m, wave.price_acceleration_5m,
+        )
+        and (persistence_minutes >= 2 or micro_higher_lows)
+    )
+    if spread_pct > STAGE_EE_MAX_SPREAD_PCT and not fresh_breakout:
+        return True
+    if spread_pct > STAGE_EE_MAX_SPREAD_PCT * 2 and move_pct < 12.0:
+        return True
+    return False
+
+
+def _range_bound_chop_reject(
+    *,
+    bars: pd.DataFrame | None,
+    current_price: float,
+    wave: RealJumpWaveSnapshot,
+    move_pct: float,
+    is_alert_update: bool,
+) -> bool:
+    """Tight session range near highs with weak acceleration — not a price explosion."""
+    if is_alert_update or bars is None or len(bars) < 20:
+        return False
+    if move_pct >= 12.0 or wave.price_acceleration_1m >= 1.0:
+        return False
+    highs = bars["high"].astype(float)
+    lows = bars["low"].astype(float)
+    session_high = float(highs.max())
+    session_rng = (session_high - float(lows.min())) / max(current_price, 0.01) * 100.0
+    if session_rng > 12.0:
+        return False
+    dist_from_high = (session_high - current_price) / max(session_high, 0.01) * 100.0
+    if dist_from_high > 2.0:
+        return False
+    expansion = _expansion_from_prior_high(bars, current_price)
+    if expansion >= 6.0:
+        return False
+    return (
+        move_pct < 11.0
+        and wave.price_acceleration_1m < 0.9
+        and wave.price_acceleration_3m < 1.2
+    )
+
+
+def _high_volume_absorption(
+    *,
+    rvol_eff: float,
+    move_pct: float,
+    price_volume_response: float,
+    wave: RealJumpWaveSnapshot,
+    bars: pd.DataFrame | None,
+    current_price: float,
+    volume_acceleration_1m: float = 0.0,
+) -> bool:
+    """High RVOL / volume surge without proportional price advance — absorption."""
+    expansion = _expansion_from_prior_high(bars, current_price)
+    prior_rng_pct = 99.0
+    if bars is not None and len(bars) >= 8:
+        lookback = min(REAL_JUMP_ABSORPTION_LOOKBACK_BARS, len(bars) - 1)
+        prior = bars.iloc[-lookback - 1:-1]
+        if not prior.empty:
+            prior_high = float(prior["high"].astype(float).max())
+            prior_low = float(prior["low"].astype(float).min())
+            prior_rng_pct = (prior_high - prior_low) / max(prior_high, 0.01) * 100.0
+
+    vol_surge = (
+        rvol_eff >= REAL_JUMP_HIGH_RVOL_ABSORPTION
+        or volume_acceleration_1m >= 6.0
+        or (rvol_eff >= 3.0 and volume_acceleration_1m >= 4.0)
+    )
+    if not vol_surge:
+        return False
+    if (
+        move_pct >= 14.0
+        and wave.price_acceleration_1m >= 2.0
+        and expansion >= 8.0
+        and _wave_has_upward_momentum(
+            wave.price_acceleration_1m, wave.price_acceleration_3m, wave.price_acceleration_5m,
+        )
+    ):
+        return False
+    if (
+        prior_rng_pct <= REAL_JUMP_ABSORPTION_RANGE_PCT + 1.0
+        and expansion < 5.0
+        and move_pct < 11.0
+        and wave.price_acceleration_1m < 1.0
+        and (volume_acceleration_1m >= 6.0 or rvol_eff >= 3.5)
+    ):
+        return True
+    if (
+        prior_rng_pct <= REAL_JUMP_ABSORPTION_RANGE_PCT
+        and expansion < 5.0
+        and move_pct < 11.0
+    ):
+        return True
+    if bars is not None and len(bars) >= 5:
+        closes = bars["close"].astype(float)
+        rng_pct = (closes.iloc[-5:].max() - closes.iloc[-5:].min()) / max(closes.iloc[-1], 0.01) * 100.0
+        if rng_pct <= 4.0 and expansion < 5.0 and move_pct < 11.0:
+            return True
+    if rvol_eff >= 30.0 and expansion < 5.0 and move_pct < 11.0:
+        return True
+    if volume_acceleration_1m >= 10.0 and prior_rng_pct <= 7.0 and expansion < 5.0 and move_pct < 10.0:
+        return True
+    if (
+        price_volume_response < 0.42
+        and rvol_eff >= 15.0
+        and move_pct < 10.0
+        and wave.price_acceleration_1m < 1.0
+        and expansion < 4.0
+    ):
+        return True
+    return False
+
+
+def _mandatory_price_response_gate(
+    *,
+    wave: RealJumpWaveSnapshot,
+    current_price: float,
+    price_volume_response: float,
+    spread_pct: float,
+    micro_higher_lows: bool,
+    persistence_minutes: int,
+    bars: pd.DataFrame | None,
+    is_alert_update: bool,
+) -> tuple[bool, str]:
+    """Require live upward price response — not volume/RVOL alone."""
+    if wave.price_acceleration_1m <= 0 and wave.price_acceleration_3m <= 0.05 and not is_alert_update:
+        return False, "price_not_rising_now"
+    up_ticks = 0
+    if bars is not None and len(bars) >= REAL_JUMP_PRICE_RESPONSE_MIN_TICKS:
+        closes = bars["close"].astype(float)
+        for i in range(-(REAL_JUMP_PRICE_RESPONSE_MIN_TICKS - 1), 0):
+            if closes.iloc[i] > closes.iloc[i - 1]:
+                up_ticks += 1
+    elif persistence_minutes >= REAL_JUMP_PRICE_RESPONSE_MIN_TICKS - 1:
+        up_ticks = REAL_JUMP_PRICE_RESPONSE_MIN_TICKS
+    if up_ticks < REAL_JUMP_PRICE_RESPONSE_MIN_TICKS - 1 and not is_alert_update:
+        has_momentum = _wave_has_upward_momentum(
+            wave.price_acceleration_1m, wave.price_acceleration_3m, wave.price_acceleration_5m,
+        )
+        if not (has_momentum and (wave.current_move_pct >= 8.0 or up_ticks >= 1)):
+            return False, "insufficient_upward_ticks"
+    peak = max(wave.wave_peak_price, current_price)
+    if peak > 0 and not is_alert_update:
+        dist_from_peak = (peak - current_price) / peak * 100.0
+        if dist_from_peak > REAL_JUMP_NEAR_PEAK_TOLERANCE_PCT and wave.current_move_pct < 8.0:
+            return False, "far_from_wave_peak"
+    min_expansion = max(2.5, spread_pct * 1.2)
+    if wave.current_move_pct < min_expansion and not micro_higher_lows and not is_alert_update:
+        return False, "expansion_below_spread_noise"
+    if price_volume_response < 0.28 and wave.current_move_pct < 10.0 and not is_alert_update:
+        return False, "weak_volume_price_response"
+    return True, ""
+
+
+def compute_real_jump_entry_status(
+    *,
+    wave: RealJumpWaveSnapshot,
+    spread_pct: float,
+    liquidity_score: float,
+    is_alert_update: bool,
+) -> str:
+    """Entry eligibility — separate from wave lifecycle."""
+    if liquidity_score < PREMOVE_MIN_LIQUIDITY_SCORE or spread_pct > STAGE_EE_MAX_SPREAD_PCT:
+        return ENTRY_STATUS_BAD_SPREAD
+    if not is_alert_update and wave.current_move_pct >= STAGE_EE_MAX_EXTENSION_PCT:
+        return ENTRY_STATUS_TOO_LATE
+    return ENTRY_STATUS_ALLOWED
+
+
+def evaluate_real_jump_live_exit(
+    *,
+    wave: RealJumpWaveSnapshot,
+    current_price: float,
+    price_volume_response: float,
+    trade_velocity_growth: float | None,
+    trade_velocity: float | None,
+    volume_acceleration_1m: float,
+    spread_pct: float,
+    liquidity_score: float,
+    bars: pd.DataFrame | None = None,
+    end_signal_streak: int = 0,
+) -> tuple[bool, str, str]:
+    """
+    End REAL_JUMP wave only on composite distribution — never on spread/extension alone.
+    Returns (wave_should_end, reason, WAVE_ENDED).
+    """
+    del spread_pct, liquidity_score  # entry-only — never end wave on these
+    peak = max(wave.wave_peak_price, current_price)
+    retrace = _retrace_from_wave_peak(peak, current_price)
+    acc_1m = wave.price_acceleration_1m
+    acc_3m = wave.price_acceleration_3m
+    acc_5m = wave.price_acceleration_5m
+
+    if wave.wave_ended or not wave.wave_active:
+        return True, "wave_ended", WAVE_STATE_ENDED_LABEL
+
+    # Fast-path: clear distribution after meaningful peak (no single-tick exit)
+    if retrace >= 13.0 and price_volume_response < 0.22 and acc_1m < -0.08:
+        return True, "distribution_from_peak", WAVE_STATE_ENDED_LABEL
+    if acc_1m < -0.10 and acc_3m < -0.04 and retrace >= 18.0:
+        return True, "negative_acceleration", WAVE_STATE_ENDED_LABEL
+
+    signals = 0
+    if acc_1m < -0.08 and acc_3m < 0.0:
+        signals += 1
+    if retrace >= 22.0 and price_volume_response < 0.28:
+        signals += 1
+    if (trade_velocity_growth or 0) < -0.06 and price_volume_response < 0.32:
+        signals += 1
+    if (
+        _wave_is_stagnant(acc_1m, acc_3m)
+        and retrace >= 15.0
+        and not _wave_has_upward_momentum(acc_1m, acc_3m, acc_5m)
+    ):
+        signals += 1
+    if bars is not None and len(bars) >= 3:
+        closes = bars["close"].astype(float)
+        if closes.iloc[-1] <= closes.iloc[-3] and acc_1m < 0 and retrace >= 12.0:
+            signals += 1
+    if (trade_velocity or 0) > 0 and (trade_velocity or 0) < 3.0 and retrace >= 18.0:
+        signals += 1
+    if volume_acceleration_1m < STAGE_VOL_ACCEL_MIN * 0.75 and retrace >= 20.0:
+        signals += 1
+
+    confirmed = end_signal_streak >= REAL_JUMP_WAVE_END_CONFIRM_TICKS
+    if signals >= REAL_JUMP_WAVE_END_SIGNALS_REQUIRED and confirmed:
+        if retrace >= 22.0 and price_volume_response < 0.30:
+            return True, "distribution_from_peak", WAVE_STATE_ENDED_LABEL
+        if acc_1m < -0.08 and acc_3m < 0.0:
+            return True, "negative_acceleration", WAVE_STATE_ENDED_LABEL
+        return True, "stalled_no_progress", WAVE_STATE_ENDED_LABEL
+    return False, "", ""
+
+
+def _single_spike_then_stop(bars: pd.DataFrame | None, wave: RealJumpWaveSnapshot) -> bool:
+    if bars is None or len(bars) < 4:
+        return False
+    closes = bars["close"].astype(float)
+    if closes.iloc[-1] >= closes.iloc[-2]:
+        return False
+    spike = closes.iloc[-3] > closes.iloc[-4] * 1.015
+    flat_after = abs(closes.iloc[-1] - closes.iloc[-2]) / max(closes.iloc[-2], 0.01) < 0.004
+    drop_after = closes.iloc[-1] < closes.iloc[-2] < closes.iloc[-3]
+    return spike and (flat_after or drop_after) and wave.price_acceleration_1m < 0.05
+
+
 def evaluate_real_jump_alert(
     *,
     current_price: float,
@@ -828,6 +1338,8 @@ def evaluate_real_jump_alert(
     news_catalyst_score: float = 0.0,
     premarket_gap_pct: float = 0.0,
     catalyst_strength: float = 0.0,
+    data_age_seconds: float = 0.0,
+    is_alert_update: bool = False,
 ) -> RealPriceJumpVerdict:
     """
     REAL_JUMP_ALERT — instant upward wave fingerprint (1m/3m/5m), not session/day change.
@@ -842,6 +1354,10 @@ def evaluate_real_jump_alert(
         return out
     if current_price <= 0:
         out.reject_reason = "invalid_price"
+        return out
+    from config import PREMOVE_DATA_MAX_AGE_SECONDS
+    if data_age_seconds > PREMOVE_DATA_MAX_AGE_SECONDS:
+        out.reject_reason = "stale_data"
         return out
 
     active_wave = wave or derive_real_jump_wave(
@@ -872,17 +1388,101 @@ def evaluate_real_jump_alert(
     if late_guard and move_pct >= STAGE_EE_MAX_EXTENSION_PCT:
         out.reject_reason = "too_late_to_chase"
         return out
-    if move_pct >= STAGE_EE_MAX_EXTENSION_PCT:
+    entry_status = compute_real_jump_entry_status(
+        wave=active_wave,
+        spread_pct=spread_pct,
+        liquidity_score=liquidity_score,
+        is_alert_update=is_alert_update,
+    )
+    active_wave.entry_status = entry_status
+    out.entry_status = entry_status
+    out.buy_pressure_source = BUY_PRESSURE_SOURCE_PROXY
+    out.data_quality = DATA_QUALITY_PROXY
+    if not is_alert_update and entry_status == ENTRY_STATUS_TOO_LATE:
         out.reject_reason = "wave_too_extended"
-        return out
-    if liquidity_score < PREMOVE_MIN_LIQUIDITY_SCORE or spread_pct > STAGE_EE_MAX_SPREAD_PCT:
-        out.reject_reason = "liquidity_spread_unacceptable"
         return out
     if _bounce_after_drop(bars, move_pct):
         out.reject_reason = "bounce_after_drop"
         return out
-
+    if not is_alert_update and _session_stall_below_peak(
+        bars=bars,
+        current_price=current_price,
+        wave=active_wave,
+        price_volume_response=price_volume_response,
+        rvol_same_time=rvol_same_time,
+    ):
+        out.reject_reason = "session_stall_below_peak"
+        return out
+    if not is_alert_update and spread_pct > REAL_JUMP_ABSOLUTE_MAX_SPREAD_PCT:
+        out.reject_reason = "post_stall_bad_spread"
+        return out
     rvol_eff = _effective_rvol(rvol=rvol, rvol_same_time=rvol_same_time)
+    if not is_alert_update and _post_stall_bad_spread_reject(
+        bars=bars,
+        current_price=current_price,
+        wave=active_wave,
+        spread_pct=spread_pct,
+        move_pct=move_pct,
+        persistence_minutes=persistence_minutes,
+        micro_higher_lows=micro_higher_lows,
+        is_alert_update=is_alert_update,
+    ):
+        out.reject_reason = "post_stall_bad_spread"
+        return out
+    if not is_alert_update and _post_peak_weak_momentum_reject(
+        bars=bars,
+        current_price=current_price,
+        wave=active_wave,
+        move_pct=move_pct,
+        price_volume_response=price_volume_response,
+        rvol_eff=rvol_eff,
+        is_alert_update=is_alert_update,
+    ):
+        out.reject_reason = "post_peak_weak_momentum"
+        return out
+    if not is_alert_update and _old_range_reactivation_blocked(
+        wave=active_wave,
+        current_price=current_price,
+        bars=bars,
+    ):
+        out.reject_reason = "old_range_reactivation"
+        return out
+    if not is_alert_update and _stalled_after_prior_peak(
+        bars=bars,
+        wave=active_wave,
+        current_price=current_price,
+        price_volume_response=price_volume_response,
+        trade_velocity_growth=trade_velocity_growth,
+        volume_acceleration_1m=volume_acceleration_1m,
+        rvol_same_time=rvol_same_time,
+    ):
+        out.reject_reason = "stalled_after_prior_peak"
+        return out
+    if not is_alert_update and _single_spike_then_stop(bars, active_wave):
+        out.reject_reason = "single_spike_then_stop"
+        return out
+
+    if not is_alert_update and _range_bound_chop_reject(
+        bars=bars,
+        current_price=current_price,
+        wave=active_wave,
+        move_pct=move_pct,
+        is_alert_update=is_alert_update,
+    ):
+        out.reject_reason = "high_volume_absorption"
+        return out
+    if not is_alert_update and _high_volume_absorption(
+        rvol_eff=rvol_eff,
+        move_pct=move_pct,
+        price_volume_response=price_volume_response,
+        wave=active_wave,
+        bars=bars,
+        current_price=current_price,
+        volume_acceleration_1m=volume_acceleration_1m,
+    ):
+        out.reject_reason = "high_volume_absorption"
+        return out
+
     surge_only = relative_surge_detected(
         change_percent=max(move_pct, 0.01),
         volume_acceleration_1m=volume_acceleration_1m,
@@ -927,6 +1527,15 @@ def evaluate_real_jump_alert(
             out.reject_reason = "activity_spike_only"
             return out
 
+    if (
+        not is_alert_update
+        and spread_pct > STAGE_EE_MAX_SPREAD_PCT * 2.5
+        and not price_strong
+        and price_volume_response < 0.5
+    ):
+        out.reject_reason = "liquidity_spread_unacceptable"
+        return out
+
     move_start = active_wave.move_start_price
     if move_start <= 0 and trigger_price > 0:
         move_start = trigger_price * 0.985
@@ -964,7 +1573,13 @@ def evaluate_real_jump_alert(
     trade_vel_ok = (trade_velocity_growth or 0) >= 0.15 or (
         (trade_velocity or 0) > 0 and (trade_velocity_growth or 0) >= 0.1
     )
+    if not is_alert_update and (trade_velocity_growth or 0) < 0.0:
+        out.reject_reason = "trade_velocity_declining"
+        return out
     buy_pressure_ok = price_volume_response >= 0.35 or dollar_volume_growth >= 0.25
+    if not is_alert_update and active_wave.price_acceleration_1m <= 0 and active_wave.price_acceleration_3m <= 0.05:
+        out.reject_reason = "price_not_rising_now"
+        return out
     vwap_ok = vwap_hold or vwap_reclaim
     micro_resistance = micro_higher_lows or resistance_distance_pct <= STAGE_BREAKOUT_NEAR_PCT * 1.5
     momentum_hold = _momentum_after_first_surge(
@@ -1018,6 +1633,17 @@ def evaluate_real_jump_alert(
         near_psychological_level=near_psychological_level(current_price),
         catalyst_strength=catalyst_strength or (news_catalyst_score / 100.0 if news_catalyst_score else 0.0),
     )
+    spread_for_confluence = spread_pct
+    if (
+        price_strong
+        and _wave_has_upward_momentum(
+            active_wave.price_acceleration_1m,
+            active_wave.price_acceleration_3m,
+            active_wave.price_acceleration_5m,
+        )
+        and STAGE_EE_MAX_SPREAD_PCT < spread_pct <= REAL_JUMP_CONFLUENCE_SPREAD_CAP_PCT
+    ):
+        spread_for_confluence = STAGE_EE_MAX_SPREAD_PCT
     confluence = compute_explosion_confluence(
         price_acceleration_ok=price_strong,
         acc_1m=active_wave.price_acceleration_1m,
@@ -1034,7 +1660,7 @@ def evaluate_real_jump_alert(
         rvol=rvol,
         rvol_same_time=rvol_same_time,
         liquidity_score=liquidity_score,
-        spread_pct=spread_pct,
+        spread_pct=spread_for_confluence,
         range_compression_3m=range_compression_3m,
         bonus=bonus_ctx,
     )
@@ -1053,6 +1679,21 @@ def evaluate_real_jump_alert(
         out.evidence_factors.append("new_instant_wave")
     out.explosive_score = int(round(confluence.total_score * 100))
 
+    if not is_alert_update:
+        price_ok, price_reason = _mandatory_price_response_gate(
+            wave=active_wave,
+            current_price=current_price,
+            price_volume_response=price_volume_response,
+            spread_pct=spread_pct,
+            micro_higher_lows=micro_higher_lows,
+            persistence_minutes=persistence_minutes,
+            bars=bars,
+            is_alert_update=is_alert_update,
+        )
+        if not price_ok:
+            out.reject_reason = price_reason
+            return out
+
     if not confluence.hard_gate_pass:
         missing = [k for k, ok in confluence.hard_gates.items() if not ok]
         out.reject_reason = f"hard_gate_{'_'.join(missing)}"
@@ -1070,6 +1711,8 @@ def evaluate_real_jump_alert(
         out.reject_reason = "gap_only"
         return out
 
+    if active_wave.wave_active:
+        active_wave.wave_state = WAVE_STATE_ACTIVE_UPWARD
     out.confirmed = True
     return out
 

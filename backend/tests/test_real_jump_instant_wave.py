@@ -178,8 +178,16 @@ def test_duplicate_alert_blocked_for_same_wave():
     registry = RealJumpAlertRegistry()
     wave = _active_wave(wave_id="TEST:5.0:2026")
     v1 = evaluate_real_jump_alert(**_strong_wave_kwargs(), wave=wave)
-    r1 = registry.process("TEST", v1, wave=wave, current_price=5.5)
-    r2 = registry.process("TEST", v1, wave=wave, current_price=5.52)
+    live = dict(
+        price_volume_response=0.55,
+        trade_velocity_growth=0.22,
+        trade_velocity=12.0,
+        volume_acceleration_1m=2.8,
+        spread_pct=1.8,
+        liquidity_score=65.0,
+    )
+    r1 = registry.process("TEST", v1, wave=wave, current_price=5.5, **live)
+    r2 = registry.process("TEST", v1, wave=wave, current_price=5.52, **live)
     assert r1.emit is True
     assert r1.update_existing is False
     assert r2.emit is True
