@@ -399,9 +399,20 @@ def surge_direct_early_entry(
 
 
 def fast_filter_surge_rank(change_percent: float, rvol: float) -> float:
-    """Rank early setups: high RVOL, penalize extended session move."""
+    """Rank early setups: high RVOL, penalize extended session move (percent-based, price-neutral)."""
     extension_penalty = max(0.0, change_percent - 12.0) * 3.0
     return rvol * 2.5 + min(change_percent, 12.0) * 0.5 - extension_penalty
+
+
+def neutral_surge_rank(
+    *,
+    wave_move_pct: float = 0.0,
+    session_change_pct: float = 0.0,
+    rvol: float = 0.0,
+) -> float:
+    """Price-neutral rank — prefer live wave % when present, else session %."""
+    move_pct = wave_move_pct if wave_move_pct > 0 else session_change_pct
+    return fast_filter_surge_rank(move_pct, max(rvol, 0.5))
 
 
 WAVE_ACCEL_1M_ACTIVE = 0.08

@@ -6,6 +6,7 @@ from config import (
     SCANNER_MAX_PRICE,
     SCANNER_MAX_SPREAD_PCT,
     SCANNER_MIN_DAY_VOLUME,
+    SCANNER_MIN_PRICE,
     SCANNER_MIN_RVOL,
 )
 from analysis.professional_decision import (
@@ -19,8 +20,8 @@ TOTAL_INSTITUTIONAL_FACTORS = len(REQUIRED_INSTITUTIONAL_FACTORS)
 
 
 def passes_automatic_price(price: float) -> bool:
-    """Automatic lists: price > 0 and <= $10."""
-    return price > 0 and price <= SCANNER_MAX_PRICE
+    """Automatic lists: SCANNER_MIN_PRICE through SCANNER_MAX_PRICE."""
+    return price >= SCANNER_MIN_PRICE and price <= SCANNER_MAX_PRICE
 
 
 def count_confirmed_factors(factor_scores: dict[str, float] | None) -> int:
@@ -35,7 +36,7 @@ def safety_passed_metrics(m: TickerMetrics, *, session) -> tuple[bool, list[str]
     """Phase-1/2 safety on coarse metrics."""
     reasons: list[str] = []
     if not passes_automatic_price(m.price):
-        reasons.append("السعر خارج نطاق 0–10$")
+        reasons.append(f"السعر خارج نطاق {SCANNER_MIN_PRICE}–{SCANNER_MAX_PRICE}$")
         return False, reasons
     if not passes_liquidity_filter(m, session):
         reasons.append("السيولة أو الحجم غير كافٍ")
@@ -53,7 +54,7 @@ def safety_passed_snapshot(snap: StockSnapshot) -> tuple[bool, list[str]]:
     price = snap.price or td.current_price
 
     if not passes_automatic_price(price):
-        reasons.append("السعر خارج نطاق 0–10$")
+        reasons.append(f"السعر خارج نطاق {SCANNER_MIN_PRICE}–{SCANNER_MAX_PRICE}$")
         return False, reasons
 
     vol = snap.volume or 0

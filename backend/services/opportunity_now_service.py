@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from analysis.early_upward_surge import fast_filter_surge_rank
+from analysis.early_upward_surge import fast_filter_surge_rank, neutral_surge_rank
 from config import SCANNER_TICK_SECONDS
 from models.opportunity_now import OpportunityNowResponse, OpportunityNowSignal
 from models.pre_move import PreMoveSignal
@@ -25,7 +25,9 @@ from services.display_buy_pressure_filter import (
 )
 from services.real_jump_alert_layer import (
     REAL_JUMP_EXPLOSIVE_WAVE_PCT,
+    apply_distinguished_jump_display,
     apply_real_jump_display,
+    eligible_for_distinguished_jump_section,
     eligible_for_price_jump_section,
     eligible_premove,
     evaluate_opportunity_real_jump,
@@ -48,10 +50,9 @@ from services.opportunity_now_scoring import (
     reset_signal_cache,
 )
 
-logger = logging.getLogger(__name__)
+from services.price_universe import passes_universe_price
 
-MAX_PRICE_USD = 10.0
-MIN_PRICE_USD = 0.50
+logger = logging.getLogger(__name__)
 
 _STAGE_RANK = {"EXPLOSIVE": 3, "ACTIVE": 2, "WATCH": 1}
 
@@ -96,7 +97,10 @@ def _jump_alert_to_signal(alert, *, session: str) -> OpportunityNowSignal:
         stage_lifecycle=stage,
         rvol=alert.rvol,
         volume_acceleration=alert.volume_acceleration,
-        buy_pressure_score=fast_filter_surge_rank(alert.change_percent, max(alert.rvol, 0.5)),
+        buy_pressure_score=neutral_surge_rank(
+            session_change_pct=alert.change_percent,
+            rvol=max(alert.rvol, 0.5),
+        ),
     )
 
 
@@ -155,7 +159,7 @@ def _collect_home_display_signals(session: str) -> list[OpportunityNowSignal]:
     out: list[OpportunityNowSignal] = []
 
     for alert_sig in _collect_jump_alerts(session):
-        if alert_sig.price <= 0 or alert_sig.price > MAX_PRICE_USD or alert_sig.change_percent <= 0:
+        if not passes_universe_price(alert_sig.price) or alert_sig.change_percent <= 0:
             continue
         verdict = evaluate_jump_alert_display(alert_sig)
         if verdict.show:
@@ -168,7 +172,7 @@ def _collect_home_display_signals(session: str) -> list[OpportunityNowSignal]:
     scan = get_last_pre_move_scan()
     if scan:
         for pm in scan.signals:
-            if pm.current_price <= 0 or pm.current_price > MAX_PRICE_USD or pm.change_percent <= 0:
+            if not passes_universe_price(pm.current_price) or pm.change_percent <= 0:
                 continue
             base = _premove_to_opportunity_signal(pm, session=session)
             if pm.display_confirmed and pm.display_type:
@@ -191,7 +195,7 @@ def _collect_home_display_signals(session: str) -> list[OpportunityNowSignal]:
             seen.add(sym)
 
     ext = _pick_extended_alert()
-    if ext and ext.price > 0 and ext.price <= MAX_PRICE_USD and ext.change_percent > 0:
+    if ext and passes_universe_price(ext.price) and ext.change_percent > 0:
         verdict = evaluate_extended_gap_display(ext)
         if verdict.show:
             enriched = apply_display_verdict(ext, verdict)
@@ -240,7 +244,7 @@ def _collect_real_jump_alerts(session: str) -> list[OpportunityNowSignal]:
 
     for alert in jump_alert_registry.get_qualified_alerts():
         base = _jump_alert_to_signal(alert, session=session)
-        if base.price <= 0 or base.price > MAX_PRICE_USD or base.change_percent <= 0:
+        if not passes_universe_price(base.price):
             continue
         sym = base.symbol.upper()
         if sym in seen:
@@ -261,6 +265,58 @@ def _collect_real_jump_alerts(session: str) -> list[OpportunityNowSignal]:
             s.buy_pressure_score,
             s.confluence_count,
             s.score,
+        ),
+        reverse=True,
+    )
+    return out
+
+
+def _collect_distinguished_jump_alerts(session: str) -> list[OpportunityNowSignal]:
+    """قفزة سعرية مميزة — live wave >= 50% from move_start; no cap."""
+    from services.jump_alert_registry import jump_alert_registry
+    from services.pre_move_predictor_service import get_last_pre_move_scan
+
+    seen: set[str] = set()
+    out: list[OpportunityNowSignal] = []
+
+    scan = get_last_pre_move_scan()
+    if scan:
+        for pm in scan.signals:
+            if not eligible_premove(pm):
+                continue
+            verdict = evaluate_premove_real_jump(pm)
+            wave = verdict.wave
+            if not wave or not eligible_for_distinguished_jump_section(
+                wave, current_price=pm.current_price,
+            ):
+                continue
+            sym = pm.symbol.upper()
+            if sym in seen:
+                continue
+            base = _premove_to_opportunity_signal(pm, session=session)
+            out.append(apply_distinguished_jump_display(base, verdict))
+            seen.add(sym)
+
+    for alert in jump_alert_registry.get_qualified_alerts():
+        base = _jump_alert_to_signal(alert, session=session)
+        if not passes_universe_price(base.price):
+            continue
+        sym = base.symbol.upper()
+        if sym in seen:
+            continue
+        verdict = evaluate_opportunity_real_jump(base)
+        wave = verdict.wave
+        if not wave or not eligible_for_distinguished_jump_section(
+            wave, current_price=base.price,
+        ):
+            continue
+        out.append(apply_distinguished_jump_display(base, verdict))
+        seen.add(sym)
+
+    out.sort(
+        key=lambda s: (
+            s.real_jump_current_move_pct,
+            s.real_jump_move_start_time or "",
         ),
         reverse=True,
     )
@@ -347,7 +403,7 @@ def _collect_snapshots() -> list[StockSnapshot]:
         if not snap or sym in seen:
             continue
         seen.add(sym)
-        if snap.price > 0 and snap.price <= MAX_PRICE_USD:
+        if snap.price > 0 and passes_universe_price(snap.price):
             result.append(snap)
     return result
 
@@ -600,6 +656,7 @@ def get_opportunity_now() -> OpportunityNowResponse:
         jump_alerts = _collect_jump_alerts(session)
         display_signals = _collect_home_display_signals(session)
         real_jump_alerts = _collect_real_jump_alerts(session)
+        distinguished_jump_alerts = _collect_distinguished_jump_alerts(session)
         engine_snap = jump_engine_monitor.get_snapshot()
         jump_engine_status = engine_snap.jump_engine_status
 
@@ -688,6 +745,7 @@ def get_opportunity_now() -> OpportunityNowResponse:
             jump_engine_status=jump_engine_status,
             display_signals=display_signals,
             real_jump_alerts=real_jump_alerts,
+            distinguished_jump_alerts=distinguished_jump_alerts,
         )
     except Exception as exc:
         logger.warning("Opportunity now unavailable: %s", type(exc).__name__)

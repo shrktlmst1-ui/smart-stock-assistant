@@ -10,6 +10,7 @@ import '../services/api_service.dart';
 import '../services/app_state.dart';
 import '../services/home_screen_cache.dart';
 import '../theme/app_theme.dart';
+import '../widgets/distinguished_jump_section.dart';
 import '../widgets/jump_section.dart';
 import '../widgets/market_pulse_card.dart';
 import 'market_pulse_screen.dart';
@@ -338,6 +339,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            DistinguishedJumpSection(
+              data: _opportunityNow,
+              loading: showOpportunitySpinner,
+              onOpenSymbol: _openAnalysis,
+            ),
             JumpSection(
               data: _opportunityNow,
               loading: showOpportunitySpinner,

@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from config import SCANNER_MAX_PRICE, SCANNER_MIN_PRICE
 from models.opportunity_now import OpportunityNowSignal
 from models.stock import StockSnapshot
+from services.price_universe import passes_universe_price
 
 logger = logging.getLogger(__name__)
 
-MAX_PRICE_USD = 10.0
-MIN_PRICE_USD = 0.0
 MAX_SPREAD_PCT = 0.5
 MIN_RVOL = 1.2
 MIN_DAY_VOLUME = 250_000
@@ -189,7 +189,7 @@ def _build_reasons(components: dict[str, float], snap: StockSnapshot, *, movemen
 
 
 def _snapshot_to_signal(snap: StockSnapshot, *, market_open: bool) -> OpportunityNowSignal | None:
-    if snap.price <= MIN_PRICE_USD or snap.price > MAX_PRICE_USD:
+    if not passes_universe_price(snap.price):
         return None
 
     spread = _spread_pct(snap)

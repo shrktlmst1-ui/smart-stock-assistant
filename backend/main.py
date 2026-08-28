@@ -17,6 +17,8 @@ from config import (
     MARKET_PULSE_WS_MAX_CLIENTS,
     POLYGON_PLAN,
     POLL_INTERVAL_SECONDS,
+    SCANNER_MAX_PRICE,
+    SCANNER_MIN_PRICE,
     SCANNER_TICK_SECONDS,
     SCANNER_TOP_N,
     WEBSOCKET_ENABLED,
@@ -142,7 +144,7 @@ def _signals_to_opportunities(
 ) -> list[StockOpportunity]:
     out: list[StockOpportunity] = []
     for sig in signals:
-        if sig.price <= 0 or sig.price > 10:
+        if not (SCANNER_MIN_PRICE <= sig.price <= SCANNER_MAX_PRICE):
             continue
         snap = snapshots.get(sig.symbol)
         risk = snap.ai_signal.risk_level if snap else "medium"

@@ -22,11 +22,9 @@ from services.extended_hours_gap_detector import (
     is_eligible_extended_gap_symbol,
 )
 from services.market_session import ET, PRE_MARKET_OPEN, REGULAR_OPEN, get_us_market_session
+from services.price_universe import passes_universe_price
 
 logger = logging.getLogger(__name__)
-
-MIN_PRICE = 0.50
-MAX_PRICE = 10.00
 MIN_PM_CHANGE_PCT = 5.0
 MIN_PM_VOLUME = 100_000
 MAX_SPREAD_PCT = 2.0
@@ -158,7 +156,7 @@ def _passes_initial_filter(
     require_volume: bool = True,
     ignore_stale: bool = False,
 ) -> ExclusionReason | None:
-    if row.current_price < MIN_PRICE or row.current_price > MAX_PRICE:
+    if not passes_universe_price(row.current_price):
         return "PRICE_OUT_OF_RANGE"
     if not ignore_stale and not row.trade_fresh:
         return "STALE_DATA"
@@ -286,7 +284,7 @@ def _early_levels(m: PremarketMetrics) -> tuple[float, float]:
 
 def _evaluate_early_momentum(m: PremarketMetrics) -> tuple[bool, str, ExclusionReason | None]:
     """Majority of early-capture conditions — no PM high break required."""
-    if m.current_price < MIN_PRICE or m.current_price > MAX_PRICE:
+    if not passes_universe_price(m.current_price):
         return False, "Price out of range", "PRICE_OUT_OF_RANGE"
     if m.premarket_change_percent < EARLY_MIN_CHANGE_PCT:
         return False, f"Change {m.premarket_change_percent}% < {EARLY_MIN_CHANGE_PCT}%", "NO_BREAKOUT"

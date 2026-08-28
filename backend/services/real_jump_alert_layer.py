@@ -20,6 +20,7 @@ from analysis.early_upward_surge import (
     evaluate_real_jump_alert,
     evaluate_real_jump_live_exit,
     fast_filter_surge_rank,
+    neutral_surge_rank,
 )
 from config import (
     PREMOVE_DATA_MAX_AGE_SECONDS,
@@ -31,10 +32,12 @@ from config import (
 from models.opportunity_now import OpportunityNowSignal
 from models.pre_move import PreMoveSignal
 from services.display_buy_pressure_filter import context_from_premove, context_from_opportunity_signal
+from services.price_universe import passes_universe_price
 
-MAX_PRICE_USD = 10.0
+DISTINGUISHED_JUMP_MIN_WAVE_PCT = 50.0
 REAL_JUMP_SECTION_MIN_WAVE_PCT = 100.0
 REAL_JUMP_EXPLOSIVE_WAVE_PCT = 150.0
+DISPLAY_DISTINGUISHED_PRICE_JUMP = "DISTINGUISHED_PRICE_JUMP"
 WAVE_SAMPLE_MAX = 12
 
 WAVE_END_NO_HH_MINUTES = 8
@@ -966,6 +969,56 @@ def real_jump_wave_peak_move_pct(kpi: RealJumpEarlyDetectionKPI | None) -> float
     return kpi.wave_peak_move_pct
 
 
+def _live_wave_move_pct(move_start_price: float, current_price: float) -> float:
+    if move_start_price <= 0 or current_price <= 0:
+        return 0.0
+    return (current_price - move_start_price) / move_start_price * 100.0
+
+
+def _retracement_from_peak_pct(peak_price: float, current_price: float) -> float:
+    if peak_price <= 0 or current_price >= peak_price:
+        return 0.0
+    return (peak_price - current_price) / peak_price * 100.0
+
+
+def eligible_for_distinguished_jump_section(
+    wave: RealJumpWaveSnapshot | None,
+    *,
+    current_price: float,
+) -> bool:
+    """قسم «قفزة سعرية مميزة» — live wave from move_start only (not session/day change)."""
+    if wave is None or wave.wave_ended or not wave.wave_active:
+        return False
+    if wave.wave_state == WAVE_STATE_ENDED_LABEL:
+        return False
+    move_start = wave.move_start_price
+    if move_start <= 0:
+        return False
+    live_pct = _live_wave_move_pct(move_start, current_price)
+    if live_pct < DISTINGUISHED_JUMP_MIN_WAVE_PCT:
+        return False
+    if not _wave_has_upward_live_structure(wave):
+        return False
+    return True
+
+
+def _wave_has_upward_live_structure(wave: RealJumpWaveSnapshot) -> bool:
+    """Short-window wave must still be advancing (1m/3m/5m), not collapsed."""
+    acc_1m = wave.price_acceleration_1m
+    acc_3m = wave.price_acceleration_3m
+    acc_5m = wave.price_acceleration_5m
+    peak = max(wave.wave_peak_price, wave.current_price)
+    retrace = _retracement_from_peak_pct(peak, wave.current_price)
+    if retrace >= 35.0 and acc_1m <= 0:
+        return False
+    rising = acc_1m > 0 or acc_3m > 0.05 or acc_5m > 0.08
+    if wave.current_move_pct >= DISTINGUISHED_JUMP_MIN_WAVE_PCT and rising:
+        return True
+    if acc_1m > 0 and acc_3m >= 0:
+        return True
+    return False
+
+
 def eligible_for_price_jump_section(
     kpi: RealJumpEarlyDetectionKPI | None,
     *,
@@ -982,6 +1035,54 @@ def is_explosive_wave(
     current_move_pct: float,
 ) -> bool:
     return current_move_pct >= REAL_JUMP_EXPLOSIVE_WAVE_PCT
+
+
+def apply_distinguished_jump_display(
+    sig: OpportunityNowSignal,
+    verdict: RealPriceJumpVerdict,
+) -> OpportunityNowSignal:
+    data = sig.model_dump()
+    wave = verdict.wave
+    kpi = verdict.kpi
+    current_price = sig.price
+    move_start = (kpi.move_start_price if kpi else 0.0) or (wave.move_start_price if wave else 0.0)
+    live_pct = _live_wave_move_pct(move_start, current_price)
+    if wave:
+        wave.current_move_pct = live_pct
+
+    data["display_type"] = DISPLAY_DISTINGUISHED_PRICE_JUMP
+    data["status"] = "NOW"
+    data["status_ar"] = "قفزة سعرية مميزة"
+    data["opportunity_type"] = DISPLAY_DISTINGUISHED_PRICE_JUMP
+    data["detection_stage"] = "DISTINGUISHED_WAVE"
+
+    move_start_time = ""
+    if wave and wave.move_start_time:
+        move_start_time = wave.move_start_time.isoformat()
+    first_detected_time = ""
+    if kpi and kpi.first_detected_time:
+        first_detected_time = kpi.first_detected_time.isoformat()
+    elif wave and wave.first_detected_time:
+        first_detected_time = wave.first_detected_time.isoformat()
+
+    first_detected_price = (kpi.first_detected_price if kpi else 0.0) or (wave.first_detected_price if wave else 0.0)
+    wave_peak = (kpi.wave_peak_price if kpi else 0.0) or (wave.wave_peak_price if wave else current_price)
+    retrace = _retracement_from_peak_pct(wave_peak, current_price)
+
+    data["real_jump_move_start_price"] = round(move_start, 4)
+    data["real_jump_move_start_time"] = move_start_time
+    data["real_jump_current_move_pct"] = round(live_pct, 3)
+    data["real_jump_first_detected_price"] = round(first_detected_price, 4)
+    data["real_jump_first_detected_time"] = first_detected_time
+    data["real_jump_wave_peak_price"] = round(wave_peak, 4)
+    data["real_jump_wave_state"] = wave.wave_state if wave and wave.wave_state else WAVE_STATE_ACTIVE_UPWARD
+    data["real_jump_retracement_from_peak_pct"] = round(retrace, 3)
+    rvol = sig.rvol or sig.relative_volume or 0.5
+    data["buy_pressure_score"] = round(
+        neutral_surge_rank(wave_move_pct=live_pct, rvol=rvol),
+        2,
+    )
+    return OpportunityNowSignal(**data)
 
 
 def apply_real_jump_display(sig: OpportunityNowSignal, verdict: RealPriceJumpVerdict) -> OpportunityNowSignal:
@@ -1027,6 +1128,9 @@ def apply_real_jump_display(sig: OpportunityNowSignal, verdict: RealPriceJumpVer
     data["real_jump_wave_peak_move_pct"] = round(wave_peak_move, 3)
     data["real_jump_peak_after_detection_pct"] = round(peak_after, 3)
     data["real_jump_wave_state"] = wave.wave_state if wave and wave.wave_state else WAVE_STATE_ACTIVE_UPWARD
+    data["real_jump_retracement_from_peak_pct"] = round(
+        _retracement_from_peak_pct(wave_peak, current_price), 3,
+    )
     data["real_jump_entry_status"] = getattr(verdict, "entry_status", "") or (wave.entry_status if wave else "")
     if is_explosive_wave(current_move_pct):
         data["detection_stage"] = "EXPLOSIVE"
@@ -1035,12 +1139,15 @@ def apply_real_jump_display(sig: OpportunityNowSignal, verdict: RealPriceJumpVer
 
     if not data.get("buy_pressure_score"):
         rvol = sig.rvol or sig.relative_volume or 0.5
-        data["buy_pressure_score"] = round(fast_filter_surge_rank(current_move_pct, rvol), 2)
+        data["buy_pressure_score"] = round(
+            neutral_surge_rank(wave_move_pct=current_move_pct, rvol=rvol),
+            2,
+        )
     return OpportunityNowSignal(**data)
 
 
 def eligible_premove(sig: PreMoveSignal) -> bool:
-    if sig.current_price <= 0 or sig.current_price > MAX_PRICE_USD:
+    if not passes_universe_price(sig.current_price):
         return False
     if sig.data_age_seconds > PREMOVE_DATA_MAX_AGE_SECONDS:
         return False

@@ -24,14 +24,13 @@ from services.market_session import (
     MarketSession,
     get_us_market_session,
 )
+from services.price_universe import passes_universe_price
 
 logger = logging.getLogger(__name__)
 
 DetectionStage = Literal["WATCH", "ACTIVE", "EXPLOSIVE"]
 VolumeStatus = Literal["KNOWN", "UNKNOWN"]
 
-MIN_PRICE_USD = 0.50
-MAX_PRICE_USD = 10.0
 WATCH_GAP_PCT = 4.0
 WATCH_MIN_VOLUME = 50_000
 ACTIVE_GAP_PCT = 7.0
@@ -380,7 +379,7 @@ def evaluate_gap(
     """Evaluate a single symbol — used by scanner and tests."""
     if session not in ("PRE_MARKET", "AFTER_HOURS"):
         return None
-    if not (MIN_PRICE_USD <= extended_price <= MAX_PRICE_USD):
+    if not passes_universe_price(extended_price):
         return None
 
     gap_pct = compute_extended_gap_pct(extended_price, previous_close)
@@ -477,7 +476,7 @@ def scan_snapshot_raw(
         quote = _extract_extended_quote(item, session)
         if not quote:
             continue
-        if not (MIN_PRICE_USD <= quote.extended_price <= MAX_PRICE_USD):
+        if not passes_universe_price(quote.extended_price):
             continue
 
         ext_vol = quote.extended_volume

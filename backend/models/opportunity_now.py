@@ -82,6 +82,8 @@ class OpportunityNowSignal(BaseModel):
     real_jump_wave_peak_price: float = 0.0
     real_jump_wave_peak_move_pct: float = 0.0
     real_jump_peak_after_detection_pct: float = 0.0
+    real_jump_wave_state: str = ""
+    real_jump_retracement_from_peak_pct: float = 0.0
 
 
 class OpportunityNowResponse(BaseModel):
@@ -102,3 +104,4 @@ class OpportunityNowResponse(BaseModel):
     jump_engine_status: str = "ARMED"
     display_signals: list[OpportunityNowSignal] = Field(default_factory=list)
     real_jump_alerts: list[OpportunityNowSignal] = Field(default_factory=list)
+    distinguished_jump_alerts: list[OpportunityNowSignal] = Field(default_factory=list)

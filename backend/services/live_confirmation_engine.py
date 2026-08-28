@@ -10,7 +10,9 @@ from typing import Literal
 
 from analysis.professional_decision import REQUIRED_INSTITUTIONAL_FACTORS
 from analysis.safety_gates import count_confirmed_factors, passes_automatic_price
+from config import SCANNER_MAX_PRICE, SCANNER_MIN_PRICE
 from models.stock import StockSnapshot
+from services.price_universe import passes_universe_price
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +20,6 @@ OpportunityStatusCode = Literal["NONE", "WATCH", "READY", "NOW", "CANCELLED"]
 
 # Safe defaults — no required env vars.
 LIVE_MONITOR_POOL = 100
-MIN_PRICE_USD = 0.50
-MAX_PRICE_USD = 10.0
 MAX_SPREAD_PCT = 0.5
 MIN_RVOL = 1.2
 MIN_DAY_VOLUME = 250_000
@@ -255,8 +255,8 @@ class LiveConfirmationEngine:
         price: float,
     ) -> tuple[bool, list[str]]:
         reasons: list[str] = []
-        if price < MIN_PRICE_USD or price > MAX_PRICE_USD:
-            reasons.append("السعر خارج نطاق 0.50–10$")
+        if not passes_universe_price(price):
+            reasons.append(f"السعر خارج نطاق {SCANNER_MIN_PRICE}–{SCANNER_MAX_PRICE}$")
             return True, reasons
         if data_age > DATA_MAX_AGE_SECONDS:
             reasons.append("البيانات قديمة")

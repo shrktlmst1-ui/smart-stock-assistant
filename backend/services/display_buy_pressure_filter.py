@@ -9,6 +9,7 @@ from analysis.early_upward_surge import (
     relative_surge_detected,
     relative_surge_from_signal,
 )
+from services.price_universe import passes_universe_price
 from config import (
     PREMOVE_DATA_MAX_AGE_SECONDS,
     PREMOVE_MIN_LIQUIDITY_SCORE,
@@ -162,7 +163,7 @@ def _has_relative_surge(ctx: BuyPressureContext) -> bool:
 
 def _passes_freshness_gate(sig: PreMoveSignal) -> bool:
     """Minimal sanity for backend-confirmed display — no full re-analysis."""
-    if sig.current_price <= 0 or sig.current_price > 10.0:
+    if not passes_universe_price(sig.current_price):
         return False
     if sig.change_percent <= 0:
         return False

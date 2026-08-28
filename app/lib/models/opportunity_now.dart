@@ -68,6 +68,8 @@ class OpportunityNowSignal {
   final double realJumpWavePeakPrice;
   final double realJumpWavePeakMovePct;
   final double realJumpPeakAfterDetectionPct;
+  final String realJumpWaveState;
+  final double realJumpRetracementFromPeakPct;
 
   const OpportunityNowSignal({
     required this.symbol,
@@ -132,6 +134,8 @@ class OpportunityNowSignal {
     this.realJumpWavePeakPrice = 0,
     this.realJumpWavePeakMovePct = 0,
     this.realJumpPeakAfterDetectionPct = 0,
+    this.realJumpWaveState = '',
+    this.realJumpRetracementFromPeakPct = 0,
   });
 
   factory OpportunityNowSignal.fromJson(Map<String, dynamic> json) {
@@ -221,6 +225,10 @@ class OpportunityNowSignal {
       realJumpPeakAfterDetectionPct: (json['real_jump_peak_after_detection_pct'] as num?)?.toDouble() ??
           (json['realJumpPeakAfterDetectionPct'] as num?)?.toDouble() ??
           0,
+      realJumpWaveState: readJsonString(json, ['real_jump_wave_state', 'realJumpWaveState']),
+      realJumpRetracementFromPeakPct: (json['real_jump_retracement_from_peak_pct'] as num?)?.toDouble() ??
+          (json['realJumpRetracementFromPeakPct'] as num?)?.toDouble() ??
+          0,
     );
   }
 
@@ -278,6 +286,8 @@ class OpportunityNowSignal {
 
   bool get isRealJumpAlertDisplay => displayType == 'REAL_JUMP_ALERT';
 
+  bool get isDistinguishedJumpDisplay => displayType == 'DISTINGUISHED_PRICE_JUMP';
+
   bool get isDisplayableBuyPressure =>
       isStrongBuyWatch || isJumpAlertDisplay || isQualifiedJumpAlert;
 
@@ -309,6 +319,7 @@ class OpportunityNowResponse {
   final List<OpportunityNowSignal> jumpAlerts;
   final List<OpportunityNowSignal> displaySignals;
   final List<OpportunityNowSignal> realJumpAlerts;
+  final List<OpportunityNowSignal> distinguishedJumpAlerts;
   final String jumpEngineStatus;
 
   const OpportunityNowResponse({
@@ -327,6 +338,7 @@ class OpportunityNowResponse {
     this.jumpAlerts = const [],
     this.displaySignals = const [],
     this.realJumpAlerts = const [],
+    this.distinguishedJumpAlerts = const [],
     this.jumpEngineStatus = 'ARMED',
   });
 
@@ -375,6 +387,14 @@ class OpportunityNowResponse {
             .toList()
         : <OpportunityNowSignal>[];
 
+    final rawDistinguished = json['distinguished_jump_alerts'] ?? json['distinguishedJumpAlerts'];
+    final distinguishedJumpAlerts = rawDistinguished is List
+        ? rawDistinguished
+            .map((e) => OpportunityNowSignal.fromJson(e as Map<String, dynamic>))
+            .where((s) => s.isDistinguishedJumpDisplay)
+            .toList()
+        : <OpportunityNowSignal>[];
+
     final status = readJsonString(json, ['status'], defaultValue: 'NONE');
     final statusAr = readJsonString(json, ['status_ar', 'statusAr']);
 
@@ -398,6 +418,7 @@ class OpportunityNowResponse {
       jumpAlerts: jumpAlerts,
       displaySignals: displaySignals,
       realJumpAlerts: realJumpAlerts,
+      distinguishedJumpAlerts: distinguishedJumpAlerts,
       jumpEngineStatus: readJsonString(
         json,
         ['jump_engine_status', 'jumpEngineStatus'],
