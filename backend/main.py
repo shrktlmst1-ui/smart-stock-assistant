@@ -314,6 +314,18 @@ def health():
     }
 
 
+@app.get("/internal/ws-truth")
+async def internal_ws_truth(request: Request, seconds: int = 45):
+    """Production hub audit — localhost only, no second WebSocket connection."""
+    client = request.client.host if request.client else ""
+    if client not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="localhost only")
+    from services.ws_truth_audit import run_production_truth_audit
+
+    report = await run_production_truth_audit(listen_seconds=max(10, min(seconds, 120)))
+    return report.to_dict()
+
+
 @app.get("/market/status")
 def market_status():
     session = get_us_market_session()

@@ -93,6 +93,7 @@ class StocksWsHub:
         self._lock = asyncio.Lock()
         self._subscribe_batch_size = WS_CHANNELS_PER_SUBSCRIBE_BATCH
         self._needs_sync = False
+        self._provider_status_messages: list[str] = []
 
     @property
     def is_running(self) -> bool:
@@ -176,6 +177,50 @@ class StocksWsHub:
     def get_consumer_symbols(self, consumer_id: str) -> list[str]:
         spec = self._consumers.get(consumer_id)
         return sorted(spec.symbols) if spec else []
+
+    def _record_provider_status(self, message: str) -> None:
+        if not message:
+            return
+        self._provider_status_messages.append(message)
+        if len(self._provider_status_messages) > 200:
+            self._provider_status_messages = self._provider_status_messages[-200:]
+
+    def audit_snapshot(self) -> dict:
+        """Hub audit for production truth — channels, auth, provider messages."""
+        channels: set[str] = set()
+        for shard in self._shards:
+            channels |= shard.subscribed_channels
+        a_wildcard = any(c == "A.*" for c in channels)
+        a_count = sum(1 for c in channels if c.startswith("A.") and c != "A.*")
+        t_channels = sorted(c for c in channels if c.startswith("T."))
+        q_channels = sorted(c for c in channels if c.startswith("Q."))
+        t_syms = sorted({c.split(".", 1)[1] for c in t_channels if "." in c})
+        q_syms = sorted({c.split(".", 1)[1] for c in q_channels if "." in c})
+        connected = sum(1 for s in self._shards if s.connected and s.authenticated)
+        return {
+            "running": self._running,
+            "shards_connected": connected,
+            "authenticated": connected > 0,
+            "provider_status_messages": list(self._provider_status_messages),
+            "channels_by_type": {
+                "A_wildcard": a_wildcard,
+                "A_count": a_count + (1 if a_wildcard else 0),
+                "T_count": len(t_channels),
+                "Q_count": len(q_channels),
+                "T_symbols_sample": t_syms[:12],
+                "Q_symbols_sample": q_syms[:12],
+                "total_channels": len(channels),
+            },
+            "consumers": {
+                cid: {
+                    "symbols": len(spec.symbols),
+                    "wildcards": list(spec.wildcards),
+                    "channel_types": list(spec.channel_types),
+                }
+                for cid, spec in self._consumers.items()
+            },
+            "reconnect_total": sum(s.reconnect_count for s in self._shards),
+        }
 
     def status_dict(self) -> dict:
         connected = sum(1 for s in self._shards if s.connected)
@@ -448,6 +493,10 @@ class StocksWsHub:
                         except json.JSONDecodeError:
                             continue
                         if isinstance(data, list) and data and data[0].get("ev") == "status":
+                            for ev in data:
+                                msg = str(ev.get("message", ""))
+                                st = ev.get("status", "")
+                                self._record_provider_status(f"{st}:{msg}")
                             msg = str(data[0].get("message", ""))
                             st = data[0].get("status", "")
                             if st == "max_connections":

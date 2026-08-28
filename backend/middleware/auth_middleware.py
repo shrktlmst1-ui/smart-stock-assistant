@@ -34,6 +34,8 @@ def _path_is_protected_api(path: str) -> bool:
         return False
     if path == "/auth/login":
         return False
+    if path == "/internal/ws-truth":
+        return False
     return any(
         path == prefix or path.startswith(f"{prefix}/")
         for prefix in _PROTECTED_API_PREFIXES
