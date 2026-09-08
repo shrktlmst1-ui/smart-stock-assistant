@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from analysis.spx_options_engine import SPX_SYMBOL, evaluate_spx
 from models.spx_signal import SPXHealth, SPXOptionCandidate, SPXSignal
-from services.polygon_client import PolygonClient
+from services.polygon_client import PolygonAPIError, PolygonClient
 from services.spx_options_snapshot import get_spx_option_chain
+from services.spx_yahoo_fallback import get_spx_fallback_frames
 
 logger = logging.getLogger(__name__)
 NY = ZoneInfo("America/New_York")
@@ -25,11 +27,34 @@ class SPXSignalService:
         self._running = False
 
     async def evaluate(self) -> SPXSignal:
-        d1h, d15m, d5m = await asyncio.gather(
-            self.client.get_aggregates(SPX_SYMBOL, 1, "hour", 120, 10),
-            self.client.get_aggregates(SPX_SYMBOL, 15, "minute", 160, 10),
-            self.client.get_aggregates(SPX_SYMBOL, 5, "minute", 220, 5),
-        )
+        """Evaluate SPX and never leak provider failures as a 500 to the UI."""
+        try:
+            d1h, d15m, d5m = await asyncio.gather(
+                self.client.get_aggregates(SPX_SYMBOL, 1, "hour", 120, 10),
+                self.client.get_aggregates(SPX_SYMBOL, 15, "minute", 160, 10),
+                self.client.get_aggregates(SPX_SYMBOL, 5, "minute", 220, 5),
+            )
+        except PolygonAPIError as exc:
+            logger.warning("SPX Polygon data unavailable (%s): %s", exc.status_code, exc.message)
+            try:
+                d1h, d15m, d5m = await get_spx_fallback_frames()
+                logger.info("SPX underlying fallback active: Yahoo ^SPX")
+            except Exception as fallback_exc:
+                logger.exception("SPX fallback failed: %s", fallback_exc)
+                return self._safe_no_trade(
+                    f"SPX market data unavailable ({exc.status_code}); kill switch active"
+                )
+        except Exception as exc:
+            logger.exception("SPX market-data cycle failed: %s", exc)
+            try:
+                d1h, d15m, d5m = await get_spx_fallback_frames()
+                logger.info("SPX underlying fallback active: Yahoo ^SPX")
+            except Exception as fallback_exc:
+                logger.exception("SPX fallback failed: %s", fallback_exc)
+                return self._safe_no_trade("SPX market data unavailable; kill switch active")
+
+        if d5m.empty or len(d5m) < 20:
+            return self._safe_no_trade("SPX market data is insufficient; kill switch active")
 
         # First pass determines the candidate direction from the underlying only.
         base = evaluate_spx(d1h, d15m, d5m, options_ready=False)
@@ -46,6 +71,28 @@ class SPXSignalService:
         signal.option = option
         if not option:
             signal.rejected_factors.append("0DTE option liquidity gate unavailable")
+            signal.kill_switch = True
+            signal.decision = "NO TRADE"
+            signal.reason = f"{signal.reason}; 0DTE option data unavailable — no trade"
+        self.last_signal = signal
+        self.cycles += 1
+        return signal
+
+    def _safe_no_trade(self, reason: str) -> SPXSignal:
+        signal = SPXSignal(
+            decision="NO TRADE",
+            score=0,
+            regime="UNKNOWN",
+            confidence="LOW",
+            reason=reason,
+            factors=[],
+            rejected_factors=[reason],
+            data_fresh=False,
+            options_ready=False,
+            kill_switch=True,
+            cycle_id=str(uuid4()),
+            timestamp=datetime.now(NY),
+        )
         self.last_signal = signal
         self.cycles += 1
         return signal
