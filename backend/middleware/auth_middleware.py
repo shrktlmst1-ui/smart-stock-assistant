@@ -2,53 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from services.auth_service import require_http_auth
 
-# REST prefixes that always require auth (WebSocket auth is handled in handlers).
 _PROTECTED_API_PREFIXES = (
-    "/auth/session",
-    "/stocks",
-    "/scanner",
-    "/smart-opportunities",
-    "/market-pulse",
-    "/risk",
-    "/smart-signals",
-    "/signals",
-    "/journal",
-    "/performance",
-    "/analytics",
-    "/backtest",
-    "/production",
-    "/universe",
-    "/market/status",
-    "/status",
+    "/auth/session", "/stocks", "/scanner", "/smart-opportunities", "/market-pulse",
+    "/risk", "/smart-signals", "/signals", "/journal", "/performance", "/analytics",
+    "/backtest", "/production", "/universe", "/market/status", "/status", "/spx",
 )
 
 
 def _path_is_protected_api(path: str) -> bool:
-    if path == "/health":
+    if path in ("/health", "/auth/login", "/internal/ws-truth"):
         return False
-    if path == "/auth/login":
-        return False
-    if path == "/internal/ws-truth":
-        return False
-    return any(
-        path == prefix or path.startswith(f"{prefix}/")
-        for prefix in _PROTECTED_API_PREFIXES
-    )
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in _PROTECTED_API_PREFIXES)
 
 
 def _is_public_request(request: Request, web_file_resolver) -> bool:
     path = request.url.path
     method = request.method.upper()
-
-    if method == "OPTIONS":
-        return True
-    if path == "/health":
+    if method == "OPTIONS" or path == "/health":
         return True
     if path == "/auth/login" and method == "POST":
         return True
@@ -60,7 +38,6 @@ def _is_public_request(request: Request, web_file_resolver) -> bool:
         rel = path.lstrip("/")
         if web_file_resolver(rel) is not None:
             return True
-        # Flutter client routes (e.g. /login) — fall back to index.html without auth.
         if not _path_is_protected_api(path):
             return True
     return False
@@ -72,6 +49,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self._web_file_resolver = web_file_resolver
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        if not getattr(request.app.state, "spx_router_registered", False):
+            lock = getattr(request.app.state, "spx_router_lock", None)
+            if lock is None:
+                lock = asyncio.Lock()
+                request.app.state.spx_router_lock = lock
+            async with lock:
+                if not getattr(request.app.state, "spx_router_registered", False):
+                    from services.spx_api import router as spx_router
+                    from services.spx_signal_service import spx_signal_service
+                    request.app.include_router(spx_router)
+                    request.app.state.spx_router_registered = True
+                    await spx_signal_service.start()
+
         if _is_public_request(request, self._web_file_resolver):
             return await call_next(request)
         try:

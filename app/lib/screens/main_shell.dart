@@ -4,6 +4,7 @@ import 'alerts_screen.dart';
 import 'home_screen.dart';
 import 'performance_screen.dart';
 import 'search_screen.dart';
+import 'spx_dashboard_screen.dart';
 import 'status_screen.dart';
 import 'watchlist_screen.dart';
 
@@ -18,6 +19,7 @@ class _MainShellState extends State<MainShell> {
   int _currentIndex = 0;
 
   final _screens = const [
+    SpxDashboardScreen(),
     HomeScreen(),
     SearchScreen(),
     WatchlistScreen(),
@@ -40,6 +42,11 @@ class _MainShellState extends State<MainShell> {
           currentIndex: _currentIndex,
           onTap: (i) => setState(() => _currentIndex = i),
           items: const [
+            BottomNavigationBarItem(
+              icon: Icon(Icons.show_chart_outlined),
+              activeIcon: Icon(Icons.show_chart),
+              label: 'SPX',
+            ),
             BottomNavigationBarItem(
               icon: Icon(Icons.home_outlined),
               activeIcon: Icon(Icons.home),
