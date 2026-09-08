@@ -19,18 +19,45 @@ class SpxApiService {
   Future<SpxSignal> fetchSignal({bool refresh = false}) async {
     await authSession.restore();
     final path = refresh ? '/spx/signal/refresh' : '/spx/signal';
+    final uri = Uri.parse('$baseUrl$path');
     final response = refresh
         ? await _client.post(
-            Uri.parse('$baseUrl$path'),
+            uri,
             headers: authSession.authHeaders(),
           ).timeout(const Duration(seconds: 20))
         : await _client.get(
-            Uri.parse('$baseUrl$path'),
+            uri,
             headers: authSession.authHeaders(),
           ).timeout(const Duration(seconds: 20));
-    if (response.statusCode != 200) {
-      throw Exception('فشل تحميل إشارة SPX (${response.statusCode})');
+
+    _ensureJsonResponse(response, path);
+
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('SPX API returned a non-object JSON payload');
+      }
+      return SpxSignal.fromJson(decoded);
+    } on FormatException catch (error) {
+      throw Exception('استجابة SPX غير صالحة من $path: ${error.message}');
+    } on TypeError catch (error) {
+      throw Exception('بيانات SPX غير متوافقة مع النموذج: $error');
     }
-    return SpxSignal.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  void _ensureJsonResponse(http.Response response, String path) {
+    final contentType = response.headers['content-type'] ?? '';
+    final isJson = contentType.toLowerCase().contains('application/json');
+    if (response.statusCode != 200 || !isJson) {
+      final preview = response.body
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+      final safePreview = preview.length > 180 ? preview.substring(0, 180) : preview;
+      throw Exception(
+        'فشل API الخاص بـ SPX: ${response.statusCode} ${response.reasonPhrase ?? ''} '
+        '| Content-Type: ${contentType.isEmpty ? 'غير موجود' : contentType} '
+        '| $path | body: $safePreview',
+      );
+    }
   }
 }
