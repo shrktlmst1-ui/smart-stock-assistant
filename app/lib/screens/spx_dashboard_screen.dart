@@ -208,7 +208,7 @@ class _SpxDashboardScreenState extends State<SpxDashboardScreen> {
                       _chip('OI', signal.option!.openInterest.toDouble()),
                     ],
                   ),
-                ],
+                ]),
               ],
               const SizedBox(height: 12),
               _section('لماذا؟', [
