@@ -147,7 +147,7 @@ class _SpxDashboardScreenState extends State<SpxDashboardScreen> {
                       ),
                       const SizedBox(height: 12),
                       Text('${signal.score}/100', style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold)),
-                      Text('Confidence ${(signal.confidence * 100).toStringAsFixed(0)}%'),
+                      Text('Confidence: ${signal.confidence}'),
                       const SizedBox(height: 12),
                       LinearProgressIndicator(value: signal.score / 100, minHeight: 8),
                     ],
