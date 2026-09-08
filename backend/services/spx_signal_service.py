@@ -9,7 +9,8 @@ from zoneinfo import ZoneInfo
 
 from analysis.spx_options_engine import SPX_SYMBOL, evaluate_spx
 from models.spx_signal import SPXHealth, SPXOptionCandidate, SPXSignal
-from services.polygon_client import PolygonAPIError, PolygonClient
+from services.polygon_client import PolygonClient
+from services.spx_options_snapshot import get_spx_option_chain
 
 logger = logging.getLogger(__name__)
 NY = ZoneInfo("America/New_York")
@@ -29,12 +30,17 @@ class SPXSignalService:
             self.client.get_aggregates(SPX_SYMBOL, 15, "minute", 160, 10),
             self.client.get_aggregates(SPX_SYMBOL, 5, "minute", 220, 5),
         )
-        # First pass determines direction from the underlying only.
+
+        # First pass determines the candidate direction from the underlying only.
         base = evaluate_spx(d1h, d15m, d5m, options_ready=False)
         spot = float(d5m.iloc[-1]["close"]) if not d5m.empty else 0.0
         option = await self._best_0dte_option(spot, base.decision)
+
+        # Final pass applies the 0DTE liquidity/options gate.
         signal = evaluate_spx(
-            d1h, d15m, d5m,
+            d1h,
+            d15m,
+            d5m,
             options_ready=bool(option and option.liquid),
         )
         signal.option = option
@@ -46,16 +52,18 @@ class SPXSignalService:
 
     async def _best_0dte_option(self, spot: float, direction: str) -> SPXOptionCandidate | None:
         """Select the nearest ATM liquid 0DTE contract matching CALL/PUT direction."""
-        if direction not in ("CALL", "PUT"):
+        if direction not in ("CALL", "PUT") or spot <= 0:
             return None
+
         today = datetime.now(NY).date().isoformat()
         try:
-            data = await self.client._request(
-                f"/v3/snapshot/options/{SPX_SYMBOL}",
-                params={"expiration_date": today, "contract_type": direction.lower(), "limit": 250},
+            chain = await get_spx_option_chain(
+                self.client,
+                expiration_date=today,
+                contract_type=direction,
+                limit=250,
             )
-            chain = data.get("results", [])
-        except (PolygonAPIError, Exception) as exc:
+        except Exception as exc:
             logger.warning("SPX 0DTE chain unavailable: %s", exc)
             return None
 
@@ -83,13 +91,21 @@ class SPXSignalService:
                 and (volume >= 10 or oi >= 100)
             )
             candidates.append(SPXOptionCandidate(
-                ticker=item.get("ticker"), contract_type=details.get("contract_type"),
-                expiration_date=details.get("expiration_date"), strike=float(strike),
-                bid=bid, ask=ask, midpoint=mid, spread_pct=spread_pct,
+                ticker=item.get("ticker"),
+                contract_type=details.get("contract_type"),
+                expiration_date=details.get("expiration_date"),
+                strike=float(strike),
+                bid=bid,
+                ask=ask,
+                midpoint=mid,
+                spread_pct=spread_pct,
                 delta=float(delta) if delta is not None else None,
                 iv=float(item.get("implied_volatility")) if item.get("implied_volatility") is not None else None,
-                volume=volume, open_interest=oi, liquid=liquid,
+                volume=volume,
+                open_interest=oi,
+                liquid=liquid,
             ))
+
         liquid = [x for x in candidates if x.liquid]
         return min(liquid, key=lambda x: abs((x.strike or spot) - spot)) if liquid else None
 
