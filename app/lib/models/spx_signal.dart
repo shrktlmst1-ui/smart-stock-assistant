@@ -99,7 +99,7 @@ class SpxSignal {
   final String decision;
   final int score;
   final String regime;
-  final double confidence;
+  final String confidence;
   final String reason;
   final double? entry;
   final double? stopLoss;
@@ -142,7 +142,7 @@ class SpxSignal {
         decision: json['decision']?.toString() ?? 'NO TRADE',
         score: (json['score'] as num?)?.toInt() ?? 0,
         regime: json['regime']?.toString() ?? 'UNKNOWN',
-        confidence: (json['confidence'] as num?)?.toDouble() ?? 0,
+        confidence: json['confidence']?.toString() ?? 'LOW',
         reason: json['reason']?.toString() ?? '',
         entry: (json['entry'] as num?)?.toDouble(),
         stopLoss: (json['stop_loss'] as num?)?.toDouble(),
