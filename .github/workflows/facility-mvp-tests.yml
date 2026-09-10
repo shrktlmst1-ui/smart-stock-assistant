@@ -42,7 +42,8 @@ jobs:
             cmake \
             ninja-build \
             pkg-config \
-            libgtk-3-dev
+            libgtk-3-dev \
+            xvfb
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -63,4 +64,5 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter test -d linux test/widget_test.dart
-      - run: flutter test -d linux integration_test/facility_live_ui_test.dart --dart-define=API_BASE_URL=http://127.0.0.1:8765
+      - name: Run live Flutter E2E under virtual display
+        run: xvfb-run -a -s '-screen 0 1280x800x24' flutter test -d linux integration_test/facility_live_ui_test.dart --dart-define=API_BASE_URL=http://127.0.0.1:8765
