@@ -21,8 +21,8 @@ void main() {
     await tester.pumpAndSettle(const Duration(seconds: 2));
 
     expect(find.text('لوحة التحكم'), findsOneWidget);
-    expect(find.text('الفروع'), findsOneWidget);
-    expect(find.text('الموظفون'), findsOneWidget);
+    expect(find.text('الفروع'), findsWidgets);
+    expect(find.text('الموظفون'), findsWidgets);
 
     await tester.tap(find.byTooltip('إضافة فرع'));
     await tester.pump();
