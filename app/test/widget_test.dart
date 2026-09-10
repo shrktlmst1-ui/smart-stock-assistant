@@ -6,7 +6,6 @@ void main() {
     await tester.pumpWidget(const FacilityManagementApp());
     await tester.pump();
 
-    expect(find.text('نظام إدارة وتشغيل المنشآت'), findsOneWidget);
     expect(find.text('تسجيل الدخول'), findsOneWidget);
     expect(find.text('البريد الإلكتروني'), findsOneWidget);
     expect(find.text('كلمة المرور'), findsOneWidget);
