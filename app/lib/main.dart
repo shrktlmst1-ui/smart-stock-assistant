@@ -1,67 +1,43 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:provider/provider.dart';
 
-import 'screens/login_screen.dart';
-import 'screens/main_shell.dart';
-import 'services/api_service.dart';
-import 'services/app_state.dart';
-import 'theme/app_theme.dart';
+import 'screens/facility_dashboard_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const SmartStockApp());
+  runApp(const FacilityManagementApp());
 }
 
-class SmartStockApp extends StatelessWidget {
-  const SmartStockApp({super.key});
+class FacilityManagementApp extends StatelessWidget {
+  const FacilityManagementApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) {
-        final api = ApiService();
-        return AppState(api: api, stockData: StockDataService(api: api))..init();
-      },
-      child: MaterialApp(
-        title: 'مساعد الأسهم الذكي',
-        debugShowCheckedModeBanner: false,
-        locale: const Locale('ar'),
-        supportedLocales: const [Locale('ar')],
-        localizationsDelegates: const [
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        theme: AppTheme.darkTheme,
-        builder: (context, child) {
-          return Directionality(
-            textDirection: TextDirection.rtl,
-            child: child!,
-          );
-        },
-        home: const _AuthGate(),
-        routes: {
-          '/login': (_) => const LoginScreen(),
-          '/home': (_) => const MainShell(),
-        },
+    return MaterialApp(
+      title: 'نظام إدارة وتشغيل المنشآت',
+      debugShowCheckedModeBanner: false,
+      locale: const Locale('ar'),
+      supportedLocales: const [Locale('ar')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      theme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        fontFamily: 'Arial',
+        scaffoldBackgroundColor: const Color(0xFF0B1220),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF2563EB),
+          brightness: Brightness.dark,
+        ),
       ),
-    );
-  }
-}
-
-class _AuthGate extends StatelessWidget {
-  const _AuthGate();
-
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<AppState>(
-      builder: (_, appState, __) {
-        if (!appState.isLoggedIn) {
-          return const LoginScreen();
-        }
-        return const MainShell();
-      },
+      builder: (context, child) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: child ?? const SizedBox.shrink(),
+      ),
+      home: const FacilityDashboardScreen(),
     );
   }
 }
