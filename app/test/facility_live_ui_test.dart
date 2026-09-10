@@ -42,5 +42,6 @@ void main() {
 
     expect(find.text('موظف الواجهة'), findsOneWidget);
     expect(find.text('UI-001 • مدير'), findsOneWidget);
+    expect(find.text('1'), findsWidgets);
   });
 }
