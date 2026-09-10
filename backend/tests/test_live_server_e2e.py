@@ -32,7 +32,13 @@ def request(port: int, path: str, method: str = "GET", body: dict | None = None,
 
 def start_server(port: int):
     env = {**os.environ, "FACILITY_DB_PATH": DB_PATH}
-    process = subprocess.Popen([sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", str(port)], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", str(port)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
     for _ in range(50):
         try:
             status, _ = request(port, "/health")
@@ -43,8 +49,7 @@ def start_server(port: int):
         time.sleep(0.2)
     output = process.stdout.read() if process.stdout else ""
     process.kill()
-    raise AssertionError(f"Backend did not start: {output}
-")
+    raise AssertionError(f"Backend did not start: {output}\n")
 
 
 def stop_server(process):
@@ -68,24 +73,46 @@ def test_real_backend_restart_persistence():
         status, health = request(port, "/health")
         assert status == 200 and health["ok"] is True
 
-        status, setup = request(port, "/api/auth/setup", "POST", {"facility_name": "شركة E2E", "admin_email": "e2e@example.test", "admin_password": "StrongPass123"})
+        status, setup = request(
+            port,
+            "/api/auth/setup",
+            "POST",
+            {"facility_name": "شركة E2E", "admin_email": "e2e@example.test", "admin_password": "StrongPass123"},
+        )
         assert status == 200
         token = setup["access_token"]
 
         status, me = request(port, "/api/me", token=token)
         assert status == 200 and me["facility"]["name"] == "شركة E2E"
 
-        status, branch = request(port, "/api/branches", "POST", {"name": "فرع E2E", "address": "الرياض"}, token)
+        status, branch = request(
+            port,
+            "/api/branches",
+            "POST",
+            {"name": "فرع E2E", "address": "الرياض"},
+            token,
+        )
         assert status == 201
         branch_id = branch["id"]
 
-        status, employee = request(port, "/api/employees", "POST", {"name": "موظف E2E", "employee_no": "E2E-001", "phone": "0500000000", "job_title": "مدير", "branch_id": branch_id}, token)
+        status, employee = request(
+            port,
+            "/api/employees",
+            "POST",
+            {"name": "موظف E2E", "employee_no": "E2E-001", "phone": "0500000000", "job_title": "مدير", "branch_id": branch_id},
+            token,
+        )
         assert status == 201
 
         stop_server(server)
         server = start_server(port)
 
-        status, login = request(port, "/api/auth/login", "POST", {"email": "e2e@example.test", "password": "StrongPass123"})
+        status, login = request(
+            port,
+            "/api/auth/login",
+            "POST",
+            {"email": "e2e@example.test", "password": "StrongPass123"},
+        )
         assert status == 200
         token = login["access_token"]
 
