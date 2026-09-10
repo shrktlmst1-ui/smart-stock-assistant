@@ -31,7 +31,9 @@ class _FacilityDashboardScreenState extends State<FacilityDashboardScreen> {
       ]),
       actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')), FilledButton(onPressed: () async { if (name.text.trim().isEmpty) return; try { await widget.api.createBranch(name.text.trim(), address.text.trim()); if (context.mounted) Navigator.pop(context, true); } catch (e) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()))); } }, child: const Text('حفظ'))],
     ));
-    name.dispose(); address.dispose();
+    // The dialog's reverse animation can still reference its TextFields briefly after pop.
+    // Dispose controllers after the route has fully detached them from the widget tree.
+    Future.delayed(const Duration(milliseconds: 500), () { name.dispose(); address.dispose(); });
     if (ok == true) await load();
   }
 
@@ -52,7 +54,7 @@ class _FacilityDashboardScreenState extends State<FacilityDashboardScreen> {
       ])),
       actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')), FilledButton(onPressed: () async { if (name.text.trim().isEmpty || number.text.trim().isEmpty) return; try { await widget.api.createEmployee({'name': name.text.trim(), 'employee_no': number.text.trim(), 'phone': phone.text.trim(), 'job_title': title.text.trim(), 'branch_id': branchId}); if (context.mounted) Navigator.pop(context, true); } catch (e) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()))); } }, child: const Text('حفظ'))],
     )));
-    name.dispose(); number.dispose(); phone.dispose(); title.dispose();
+    Future.delayed(const Duration(milliseconds: 500), () { name.dispose(); number.dispose(); phone.dispose(); title.dispose(); });
     if (ok == true) await load();
   }
 
