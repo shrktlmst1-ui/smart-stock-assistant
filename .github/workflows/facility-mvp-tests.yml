@@ -52,5 +52,5 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
-      - run: flutter test test/widget_test.dart
-      - run: flutter test integration_test/facility_live_ui_test.dart --dart-define=API_BASE_URL=http://127.0.0.1:8765
+      - run: flutter test -d linux test/widget_test.dart
+      - run: flutter test -d linux integration_test/facility_live_ui_test.dart --dart-define=API_BASE_URL=http://127.0.0.1:8765
