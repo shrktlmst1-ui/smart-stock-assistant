@@ -63,7 +63,12 @@ class PostgresConnection:
         self._conn = conn
 
     def execute(self, sql, params=()):
-        return PostgresCursor(self._conn.cursor()).execute(sql, params)
+        return PostgresCursor(self._conn.cursor(row_factory=self._row_factory)).execute(sql, params)
+
+    @property
+    def _row_factory(self):
+        from psycopg.rows import dict_row
+        return dict_row
 
     def commit(self):
         self._conn.commit()
@@ -78,8 +83,9 @@ class PostgresConnection:
 def init_db() -> None:
     if DATABASE_URL:
         import psycopg
+        from psycopg.rows import dict_row
         with psycopg.connect(DATABASE_URL) as conn:
-            with conn.cursor() as cur:
+            with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(POSTGRES_SCHEMA)
             conn.commit()
         return
