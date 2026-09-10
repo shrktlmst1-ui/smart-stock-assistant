@@ -1,7 +1,6 @@
-# Python dependencies — install from project root:
-#   pip install -r requirements.txt
-#
-# Or from backend folder:
-#   cd backend && pip install -r requirements.txt
-
--r backend/requirements.txt
+# Minimal dependencies for the facility MVP staging backend.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+bcrypt==4.2.1
+PyJWT==2.10.1
