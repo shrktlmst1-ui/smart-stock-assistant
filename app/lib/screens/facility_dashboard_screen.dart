@@ -21,40 +21,18 @@ class _FacilityDashboardScreenState extends State<FacilityDashboardScreen> {
   }
 
   Future<void> addBranch() async {
-    final name = TextEditingController();
-    final address = TextEditingController();
-    final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
-      title: const Text('إضافة فرع'),
-      content: Column(mainAxisSize: MainAxisSize.min, children: [
-        TextField(controller: name, decoration: const InputDecoration(labelText: 'اسم الفرع')),
-        TextField(controller: address, decoration: const InputDecoration(labelText: 'العنوان')),
-      ]),
-      actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')), FilledButton(onPressed: () async { if (name.text.trim().isEmpty) return; try { await widget.api.createBranch(name.text.trim(), address.text.trim()); if (context.mounted) Navigator.pop(context, true); } catch (e) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()))); } }, child: const Text('حفظ'))],
-    ));
-    // The dialog's reverse animation can still reference its TextFields briefly after pop.
-    // Dispose controllers after the route has fully detached them from the widget tree.
-    Future.delayed(const Duration(milliseconds: 500), () { name.dispose(); address.dispose(); });
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => _AddBranchDialog(api: widget.api),
+    );
     if (ok == true) await load();
   }
 
   Future<void> addEmployee() async {
-    final name = TextEditingController();
-    final number = TextEditingController();
-    final phone = TextEditingController();
-    final title = TextEditingController();
-    int? branchId;
-    final ok = await showDialog<bool>(context: context, builder: (_) => StatefulBuilder(builder: (context, setDialogState) => AlertDialog(
-      title: const Text('إضافة موظف'),
-      content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        TextField(controller: name, decoration: const InputDecoration(labelText: 'اسم الموظف')),
-        TextField(controller: number, decoration: const InputDecoration(labelText: 'رقم الموظف')),
-        TextField(controller: phone, decoration: const InputDecoration(labelText: 'الجوال')),
-        TextField(controller: title, decoration: const InputDecoration(labelText: 'المسمى الوظيفي')),
-        DropdownButtonFormField<int?>(value: branchId, decoration: const InputDecoration(labelText: 'الفرع'), items: [const DropdownMenuItem<int?>(value: null, child: Text('بدون فرع')), ...branches.map((b) => DropdownMenuItem<int?>(value: b['id'] as int, child: Text(b['name'].toString())))], onChanged: (v) => setDialogState(() => branchId = v)),
-      ])),
-      actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')), FilledButton(onPressed: () async { if (name.text.trim().isEmpty || number.text.trim().isEmpty) return; try { await widget.api.createEmployee({'name': name.text.trim(), 'employee_no': number.text.trim(), 'phone': phone.text.trim(), 'job_title': title.text.trim(), 'branch_id': branchId}); if (context.mounted) Navigator.pop(context, true); } catch (e) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()))); } }, child: const Text('حفظ'))],
-    )));
-    Future.delayed(const Duration(milliseconds: 500), () { name.dispose(); number.dispose(); phone.dispose(); title.dispose(); });
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => _AddEmployeeDialog(api: widget.api, branches: branches),
+    );
     if (ok == true) await load();
   }
 
@@ -77,6 +55,109 @@ class _FacilityDashboardScreenState extends State<FacilityDashboardScreen> {
         ...employees.map((e) => Card(child: ListTile(leading: const Icon(Icons.person_outline), title: Text(e['name'].toString()), subtitle: Text('${e['employee_no']} • ${(e['job_title'] ?? '').toString()}')))),
       ],
     ])),
+  );
+}
+
+class _AddBranchDialog extends StatefulWidget {
+  final FacilityApiService api;
+  const _AddBranchDialog({required this.api});
+  @override State<_AddBranchDialog> createState() => _AddBranchDialogState();
+}
+
+class _AddBranchDialogState extends State<_AddBranchDialog> {
+  final name = TextEditingController();
+  final address = TextEditingController();
+  bool saving = false;
+
+  @override void dispose() {
+    name.dispose();
+    address.dispose();
+    super.dispose();
+  }
+
+  Future<void> save() async {
+    if (name.text.trim().isEmpty || saving) return;
+    setState(() => saving = true);
+    try {
+      await widget.api.createBranch(name.text.trim(), address.text.trim());
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        setState(() => saving = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+      }
+    }
+  }
+
+  @override Widget build(BuildContext context) => AlertDialog(
+    title: const Text('إضافة فرع'),
+    content: Column(mainAxisSize: MainAxisSize.min, children: [
+      TextField(controller: name, decoration: const InputDecoration(labelText: 'اسم الفرع')),
+      TextField(controller: address, decoration: const InputDecoration(labelText: 'العنوان')),
+    ]),
+    actions: [
+      TextButton(onPressed: saving ? null : () => Navigator.pop(context, false), child: const Text('إلغاء')),
+      FilledButton(onPressed: saving ? null : save, child: Text(saving ? 'جارٍ الحفظ...' : 'حفظ')),
+    ],
+  );
+}
+
+class _AddEmployeeDialog extends StatefulWidget {
+  final FacilityApiService api;
+  final List<dynamic> branches;
+  const _AddEmployeeDialog({required this.api, required this.branches});
+  @override State<_AddEmployeeDialog> createState() => _AddEmployeeDialogState();
+}
+
+class _AddEmployeeDialogState extends State<_AddEmployeeDialog> {
+  final name = TextEditingController();
+  final number = TextEditingController();
+  final phone = TextEditingController();
+  final title = TextEditingController();
+  int? branchId;
+  bool saving = false;
+
+  @override void dispose() {
+    name.dispose();
+    number.dispose();
+    phone.dispose();
+    title.dispose();
+    super.dispose();
+  }
+
+  Future<void> save() async {
+    if (name.text.trim().isEmpty || number.text.trim().isEmpty || saving) return;
+    setState(() => saving = true);
+    try {
+      await widget.api.createEmployee({
+        'name': name.text.trim(),
+        'employee_no': number.text.trim(),
+        'phone': phone.text.trim(),
+        'job_title': title.text.trim(),
+        'branch_id': branchId,
+      });
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        setState(() => saving = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+      }
+    }
+  }
+
+  @override Widget build(BuildContext context) => AlertDialog(
+    title: const Text('إضافة موظف'),
+    content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      TextField(controller: name, decoration: const InputDecoration(labelText: 'اسم الموظف')),
+      TextField(controller: number, decoration: const InputDecoration(labelText: 'رقم الموظف')),
+      TextField(controller: phone, decoration: const InputDecoration(labelText: 'الجوال')),
+      TextField(controller: title, decoration: const InputDecoration(labelText: 'المسمى الوظيفي')),
+      DropdownButtonFormField<int?>(value: branchId, decoration: const InputDecoration(labelText: 'الفرع'), items: [const DropdownMenuItem<int?>(value: null, child: Text('بدون فرع')), ...widget.branches.map((b) => DropdownMenuItem<int?>(value: b['id'] as int, child: Text(b['name'].toString())))], onChanged: saving ? null : (v) => setState(() => branchId = v)),
+    ])),
+    actions: [
+      TextButton(onPressed: saving ? null : () => Navigator.pop(context, false), child: const Text('إلغاء')),
+      FilledButton(onPressed: saving ? null : save, child: Text(saving ? 'جارٍ الحفظ...' : 'حفظ')),
+    ],
   );
 }
 
