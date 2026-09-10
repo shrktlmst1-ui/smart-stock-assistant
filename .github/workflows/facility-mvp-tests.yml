@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
-      - run: pytest -q tests/test_facility_api.py
+      - run: pytest -q tests/test_facility_api.py tests/test_live_server_e2e.py
 
   flutter:
     runs-on: ubuntu-latest
@@ -29,10 +29,23 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install backend dependencies
+        run: pip install -r ../backend/requirements.txt
+      - name: Start real backend
+        working-directory: backend
+        run: |
+          rm -f /tmp/facility_flutter_ui.sqlite3
+          FACILITY_DB_PATH=/tmp/facility_flutter_ui.sqlite3 nohup python -m uvicorn main:app --host 127.0.0.1 --port 8765 > /tmp/facility-api.log 2>&1 &
+          for i in {1..50}; do curl --fail http://127.0.0.1:8765/health && exit 0; sleep 0.2; done
+          cat /tmp/facility-api.log
+          exit 1
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.35.2'
           channel: stable
           cache: true
       - run: flutter pub get
-      - run: flutter test
+      - run: flutter test --dart-define=API_BASE_URL=http://127.0.0.1:8765
