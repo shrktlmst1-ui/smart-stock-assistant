@@ -3,6 +3,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 DB_PATH = os.path.join(tempfile.gettempdir(), "facility_mvp_test.sqlite3")
 os.environ["FACILITY_DB_PATH"] = DB_PATH
@@ -10,6 +11,9 @@ try:
     os.remove(DB_PATH)
 except FileNotFoundError:
     pass
+
+# Make the backend application importable when pytest is launched from backend/tests.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 from main import app
@@ -36,13 +40,11 @@ def test_setup_login_and_persistence_across_client_restart():
         assert client.get("/api/branches", headers=headers).json()[0]["name"] == "الفرع الرئيسي"
         assert client.get("/api/employees", headers=headers).json()[0]["employee_no"] == "E-001"
 
-    # Verify the data is physically committed to the SQLite file, not only held in memory.
     with sqlite3.connect(DB_PATH) as conn:
         assert conn.execute("SELECT name FROM facilities").fetchone()[0] == "شركة اختبار"
         assert conn.execute("SELECT name FROM branches").fetchone()[0] == "الفرع الرئيسي"
         assert conn.execute("SELECT employee_no FROM employees").fetchone()[0] == "E-001"
 
-    # Verify a fresh Python process can reopen the same database and read the saved data.
     check = subprocess.run(
         [sys.executable, "-c", "import os,sqlite3; p=os.environ['FACILITY_DB_PATH']; c=sqlite3.connect(p); assert c.execute('SELECT COUNT(*) FROM facilities').fetchone()[0] == 1; assert c.execute('SELECT COUNT(*) FROM branches').fetchone()[0] == 1; assert c.execute('SELECT COUNT(*) FROM employees').fetchone()[0] == 1"],
         env={**os.environ, "FACILITY_DB_PATH": DB_PATH},
